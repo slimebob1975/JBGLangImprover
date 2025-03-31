@@ -202,7 +202,43 @@ class JBGDocumentEditor:
             if not match_found:
                 print(f"No match found for '{old}' on page {change['page']}.")
 
+        self._deduplicate_annotations(doc)
         return doc
+    
+    def _deduplicate_annotations(self, doc, distance_threshold=5):
+        for page in doc:
+            existing = []
+            to_remove = []
+
+            for annot in page.annots():
+                if annot.type[0] != 8:  # 8 = Highlight, 1 = FreeText
+                    continue
+
+                rect = annot.rect
+                content = (annot.info.get("content") or "").strip()
+
+                is_duplicate = False
+                for seen_rect, seen_text in existing:
+                    if (
+                        content == seen_text or
+                        (abs(rect.x0 - seen_rect.x0) < distance_threshold and
+                        abs(rect.y0 - seen_rect.y0) < distance_threshold and
+                        abs(rect.x1 - seen_rect.x1) < distance_threshold and
+                        abs(rect.y1 - seen_rect.y1) < distance_threshold)
+                    ):
+                        is_duplicate = True
+                        break
+
+                if is_duplicate:
+                    to_remove.append(annot)
+                else:
+                    existing.append((rect, content))
+
+                num_duplicates = len(to_remove)
+            for annot in to_remove:
+                page.delete_annot(annot)
+
+        print(f"Removed {num_duplicates} duplicate annotations.")
 
 def main():
     if len(sys.argv) != 3:
