@@ -17,7 +17,7 @@ class JBGLanguageImprover:
     def run(self):
         
         print("🔍 Extracting structure...")
-        extractor = DocumentStructureExtractor(self.input_path, self.structure_json)
+        extractor = DocumentStructureExtractor(self.input_path)
         extractor.extract()
         self.structure_json = extractor.save_as_json()
 

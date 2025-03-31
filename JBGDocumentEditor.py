@@ -46,7 +46,7 @@ class JBGDocumentEditor:
         doc = Document(self.filepath)
 
         # First, handle empty paragraph insertions
-        #self._apply_to_empty_paragraphs(doc)
+        self._apply_to_empty_paragraphs(doc)
         
         for idx, para in enumerate(doc.paragraphs):
             para_index = idx + 1
@@ -174,7 +174,7 @@ class JBGDocumentEditor:
                         for rect in rects:
                             highlight = page.add_highlight_annot(rect)
                             if new:
-                                highlight.set_info(content=f"Suggestion: replace '{old}' with '{new}'")
+                                highlight.set_info(content=f"{new}")
                         match_found = True
                         break
 
@@ -186,7 +186,7 @@ class JBGDocumentEditor:
                             for rect in rects:
                                 highlight = page.add_highlight_annot(rect)
                                 if new:
-                                    highlight.set_info(content=f"Suggestion: replace '{old}' with '{new}'")
+                                    highlight.set_info(content=f"{new}")
                             print(f"Could not find '{old}' on page {change['page']}, line {target_line} — did you mean line {line_no}?")
                             match_found = True
                             break
@@ -196,7 +196,7 @@ class JBGDocumentEditor:
                 for rect in rects:
                     highlight = page.add_highlight_annot(rect)
                     if new:
-                        highlight.set_info(content=f"Suggestion: replace '{old}' with '{new}'")
+                        highlight.set_info(content=f"{new}")
                 match_found = bool(rects)
 
             if not match_found:

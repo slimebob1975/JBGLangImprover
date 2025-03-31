@@ -13,10 +13,12 @@ class JBGLangImprovSuggestorAI:
         with open(policy_file, 'r', encoding='utf-8') as f:
             self.policy_prompt = f.read()
 
+        self.file_path = None
         self.json_structured_document = None
         self.json_suggestions = None
         
     def load_structure(self, filepath):
+        self.file_path = filepath
         self.json_structured_document = json.load(open(filepath, "r", encoding="utf-8"))
         if not self.json_structured_document:
             print(f"Error: Could not load JSON document from {filepath}")
@@ -26,7 +28,7 @@ class JBGLangImprovSuggestorAI:
         if not self.json_suggestions:
             self.suggest_changes()
         if not output_path:
-            output_path = os.path.splitext(self.filepath)[0] + "_suggestions.json"
+            output_path = self.file_path + "_suggestions.json"
         try:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(self.json_suggestions, f, indent=2, ensure_ascii=False)
