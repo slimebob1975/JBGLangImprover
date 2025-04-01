@@ -1,9 +1,9 @@
 import json
 import os
 import sys
-from JBGDocumentStructureExtractor import DocumentStructureExtractor
-from JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
-from JBGDocumentEditor import JBGDocumentEditor
+from ..src.JBGDocumentStructureExtractor import DocumentStructureExtractor
+from ..src.JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
+from ..src.JBGDocumentEditor import JBGDocumentEditor
 
 class JBGLanguageImprover:
         
