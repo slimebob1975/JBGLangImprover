@@ -1,3 +1,6 @@
+uvicorn
 python-docx
-pymupdf
+PyMuPDF
+pypdf
 openai
+jinja2
