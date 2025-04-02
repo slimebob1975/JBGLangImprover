@@ -61,7 +61,7 @@ To create your own:
 2. Write instructions describing what kind of improvements you'd like (e.g., "Use clear language. Avoid abbreviations. Rewrite long sentences.")
 3. You can also extend the base prompt with session-specific notes via the GUI.
 
-Example contents of `prompt_policy.md` i Swedish:
+Example contents of `prompt_policy.md` in Swedish:
 
 ```markdown
 Klarspråk är språk som är vårdat, enkelt och begripligt. Undvik förkortningar och svåra uttryck. Förklara tekniska termer om möjligt. Korta ner långa meningar.
