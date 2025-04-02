@@ -1,4 +1,5 @@
 {
+    "info": "Rename this file to azure_keys.json",
     "api_base": "https://to-be-added.openai.azure.com/",
     "api_key": "YOUR API KEY",
     "model": "gpt-4o"
