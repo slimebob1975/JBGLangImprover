@@ -3,10 +3,12 @@ import json
 from docx import Document
 import fitz  # PyMuPDF
 import sys
+import logging
 
 class DocumentStructureExtractor:
-    def __init__(self, filepath):
+    def __init__(self, filepath, logger):
         self.filepath = filepath
+        self.logger = logger
         self.ext = os.path.splitext(filepath)[1].lower()
         self.structure = None
 
@@ -63,7 +65,7 @@ class DocumentStructureExtractor:
                 json.dump(self.structure, f, indent=2, ensure_ascii=False)
             return output_path
         except Exception as e:
-            print(f"Error saving JSON structure: {str(e)}")
+            self.logger.error(f"Error saving JSON structure: {str(e)}")
             return None
     
 def main():

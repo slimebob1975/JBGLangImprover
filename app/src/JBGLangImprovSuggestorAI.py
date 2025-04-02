@@ -4,11 +4,12 @@ import sys
 import os
 import re
 import time
+import logging
 
 MAX_TOKEN_PER_CALL = 3000
 
 class JBGLangImprovSuggestorAI:
-    def __init__(self, key_file, policy_file):
+    def __init__(self, key_file, policy_file, logger):
         
         with open(key_file, 'r') as f:
             self.keys = json.load(f)
@@ -16,6 +17,7 @@ class JBGLangImprovSuggestorAI:
         with open(policy_file, 'r', encoding='utf-8') as f:
             self.policy_prompt = f.read()
 
+        self.logger = logger
         self.file_path = None
         self.json_structured_document = None
         self.json_suggestions = None
@@ -24,7 +26,7 @@ class JBGLangImprovSuggestorAI:
         self.file_path = filepath
         self.json_structured_document = json.load(open(filepath, "r", encoding="utf-8"))
         if not self.json_structured_document:
-            print(f"Error: Could not load JSON document from {filepath}")
+            self.logger.error(f"Error: Could not load JSON document from {filepath}")
             sys.exit(1)
             
     def save_as_json(self, output_path = None):
@@ -37,7 +39,7 @@ class JBGLangImprovSuggestorAI:
                 json.dump(self.json_suggestions, f, indent=2, ensure_ascii=False)
             return output_path
         except Exception as e:
-            print(f"Error saving JSON structure: {str(e)}")
+            self.logger.error(f"Error saving JSON structure: {str(e)}")
             return None
     
     def suggest_changes(self):
@@ -59,7 +61,7 @@ class JBGLangImprovSuggestorAI:
             cleaned_suggestions = self._clean_json_response(suggestions)
             self.json_suggestions = json.loads(cleaned_suggestions)
         except Exception as e:
-            print(f"Error during OpenAI suggestion generation: {e}")
+            self.logger.error(f"Error during OpenAI suggestion generation: {e}")
             self.json_suggestions = None
 
     def suggest_changes_token_aware_batching(self, max_tokens_per_call=MAX_TOKEN_PER_CALL):
@@ -96,7 +98,7 @@ class JBGLangImprovSuggestorAI:
         if current_chunk:
             chunks.append(current_chunk)
 
-        print(f"🔹 Sending {len(chunks)} separate API requests due to size.")
+        self.logger.info(f"🔹 Sending {len(chunks)} separate API requests due to size.")
 
         all_suggestions = []
         first = True
@@ -122,7 +124,7 @@ class JBGLangImprovSuggestorAI:
                 parsed = json.loads(cleaned)
                 all_suggestions.extend(parsed)
             except Exception as e:
-                print(f"Error in chunk {i+1}: {e}")
+                self.logger.error(f"Error in chunk {i+1}: {e}")
 
         self.json_suggestions = all_suggestions
 

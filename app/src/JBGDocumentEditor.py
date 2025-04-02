@@ -4,17 +4,19 @@ import os, sys
 import json
 import fitz # PyMuPDF
 import re
+import logging
 
 DEBUG = False
 
 class JBGDocumentEditor:
     
-    def __init__(self, filepath, changes_path):
+    def __init__(self, filepath, changes_path, logger):
         """
         :param filepath: Path to the input document (.docx or .pdf)
         :param changes_path: Path to the suggested changes JSON file
         """
         self.filepath = filepath
+        self.logger = logger
         self.changes = self._get_changes_from_json(changes_path)  
         self.ext = os.path.splitext(filepath)[1].lower()
         self.edited_document = None
@@ -93,7 +95,7 @@ class JBGDocumentEditor:
                             new_rebuilt.append(("insert", new))
 
                 rebuilt = new_rebuilt
-                #print(f"✅ Applied: '{old}' → '{new}' in paragraph {para_index}")
+                self.logger.info(f"✅ Applied: '{old}' → '{new}' in paragraph {para_index}")
 
                 applied_changes.add((para_index, old))
 
@@ -115,7 +117,7 @@ class JBGDocumentEditor:
         for change in self.changes:
             key = (change.get("paragraph"), change.get("old"))
             if key not in applied_changes:
-                print(f"⚠️ No match found for '{change['old']}' in paragraph {change['paragraph']}.")
+                self.logger.error(f"⚠️ No match found for '{change['old']}' in paragraph {change['paragraph']}.")
 
         return doc
 
@@ -125,7 +127,7 @@ class JBGDocumentEditor:
             if "paragraph" in change:
                 para_num = change["paragraph"]
                 if not (1 <= para_num <= total):
-                    print(f"Warning: Paragraph {para_num} is out of range.")
+                    self.logger.warning(f"Warning: Paragraph {para_num} is out of range.")
                     continue
                 expected_para = doc.paragraphs[para_num - 1].text
                 if change["old"] not in expected_para:
@@ -133,7 +135,7 @@ class JBGDocumentEditor:
                         alt_idx = para_num - 1 + offset
                         if 0 <= alt_idx < total:
                             if change["old"] in doc.paragraphs[alt_idx].text:
-                                print(f"Could not find '{change['old']}' in paragraph {para_num} — did you mean paragraph {alt_idx + 1}?")
+                                self.logger.warning(f"Could not find '{change['old']}' in paragraph {para_num} — did you mean paragraph {alt_idx + 1}?")
                                 break
 
     def _apply_to_empty_paragraphs(self, doc):
@@ -144,7 +146,7 @@ class JBGDocumentEditor:
 
             for change in self.changes:
                 if not isinstance(change, dict):
-                    print(f"Skipping invalid change (not a dict): {change}")
+                    self.logger.error(f"Skipping invalid change (not a dict): {change}")
                     continue
                 elif (
                     change.get("paragraph") == para_index
@@ -152,7 +154,7 @@ class JBGDocumentEditor:
                     and change.get("new")
                 ):
                     para.text = change["new"]
-                    print(f"Filled empty paragraph {para_index} with: {change['new']}")
+                    self.logger.info(f"Filled empty paragraph {para_index} with: {change['new']}")
 
     @staticmethod
     def _normalize_text(text):
@@ -185,7 +187,7 @@ class JBGDocumentEditor:
             page = doc[page_index]
             rects = page.search_for(change["old"])
             if not rects:
-                print(f"No match found for '{change['old']}' on page {change['page']}")
+                self.logger.error(f"No match found for '{change['old']}' on page {change['page']}")
                 continue
 
             for rect in rects:
@@ -228,6 +230,7 @@ class JBGDocumentEditor:
                             if new:
                                 highlight.set_info(content=f"{new}")
                         match_found = True
+                        self.logger.info(f"✅ Applied: '{old}' → '{new}' on page {page_index + 1}, line {target_line + 1}")
                         break
 
                 # If not found, try nearby lines
@@ -240,7 +243,7 @@ class JBGDocumentEditor:
                                 highlight = page.add_highlight_annot(rect)
                                 if new:
                                     highlight.set_info(content=f"{new}")
-                            print(f"Could not find '{old}' on page {change['page']}, line {target_line} — did you mean line {line_no}?")
+                            self.logger.warning(f"Could not find '{old}' on page {change['page']}, line {target_line} — did you mean line {line_no}?")
                             match_found = True
                             break
             else:
@@ -253,7 +256,7 @@ class JBGDocumentEditor:
                 match_found = bool(rects)
 
             if not match_found:
-                print(f"No match found for '{old}' on page {change['page']}.")
+                self.logger.error(f"No match found for '{old}' on page {change['page']}.")
 
         self._deduplicate_annotations(doc)
         return doc
@@ -293,7 +296,7 @@ class JBGDocumentEditor:
             for annot in to_remove:
                 page.delete_annot(annot)
 
-        print(f"Removed {num_duplicates} duplicate annotations.")
+        self.logger.info(f"Removed {num_duplicates} duplicate annotations.")
         return
 
 def main():
