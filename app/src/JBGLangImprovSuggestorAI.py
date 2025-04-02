@@ -9,14 +9,12 @@ import logging
 MAX_TOKEN_PER_CALL = 3000
 
 class JBGLangImprovSuggestorAI:
-    def __init__(self, key_file, policy_file, logger):
+    
+    def __init__(self, api_key, model, prompt_policy, logger):
         
-        with open(key_file, 'r') as f:
-            self.keys = json.load(f)
-        
-        with open(policy_file, 'r', encoding='utf-8') as f:
-            self.policy_prompt = f.read()
-
+        self.api_key = api_key
+        self.model = model
+        self.policy_prompt = prompt_policy
         self.logger = logger
         self.file_path = None
         self.json_structured_document = None
@@ -44,7 +42,9 @@ class JBGLangImprovSuggestorAI:
     
     def suggest_changes(self):
 
-        client = openai.OpenAI(api_key=self.keys["api_key"])
+        self.logger.info(f"The used prompt policy:\n{str(self.policy_prompt)}\n\n")
+
+        client = openai.OpenAI(api_key=self.api_key)
         
         messages = [
             {"role": "system", "content": self.policy_prompt},
@@ -53,7 +53,7 @@ class JBGLangImprovSuggestorAI:
 
         try:
             response = client.chat.completions.create(
-                model=self.keys["model"],
+                model=self.model,
                 messages=messages,
                 temperature=0.7
             )
@@ -65,9 +65,10 @@ class JBGLangImprovSuggestorAI:
             self.json_suggestions = None
 
     def suggest_changes_token_aware_batching(self, max_tokens_per_call=MAX_TOKEN_PER_CALL):
-        client = openai.OpenAI(api_key=self.keys["api_key"])
-        model_name = self.keys["model"]
-
+        
+        self.logger.info(f"The used prompt policy:\n{str(self.policy_prompt)}\n\n")
+        
+        client = openai.OpenAI(api_key=self.api_key)
         system_msg = {"role": "system", "content": self.policy_prompt}
         structure = self.json_structured_document
 
@@ -115,7 +116,7 @@ class JBGLangImprovSuggestorAI:
 
             try:
                 response = client.chat.completions.create(
-                    model=model_name,
+                    model=self.model,
                     messages=messages,
                     temperature=0.7
                 )
@@ -123,6 +124,7 @@ class JBGLangImprovSuggestorAI:
                 cleaned = self._clean_json_response(suggestions)
                 parsed = json.loads(cleaned)
                 all_suggestions.extend(parsed)
+                self.logger.info(f"✅ Executed API requests #{i}.")
             except Exception as e:
                 self.logger.error(f"Error in chunk {i+1}: {e}")
 
@@ -140,21 +142,38 @@ class JBGLangImprovSuggestorAI:
         
 def main():
     
-    if len(sys.argv) != 3:
-        print(f"Usage: python {os.path.basename(__file__)} <document JSON structure file> <policy file>")
+    if len(sys.argv) != 6:
+        print(f"Usage: python {os.path.basename(__file__)} <structure_file.json> <api_key> <model> <prompt_policy_file> <custom_addition_file>")
         sys.exit(1)
-    
-    structure_path = sys.argv[1]
-    policy_file = sys.argv[2]
-    key_file = "./openai/azure_keys.json"
 
-    suggestor_ai = JBGLangImprovSuggestorAI(key_file, policy_file)
-    suggestor_ai.load_structure(structure_path)
-    suggestor_ai.suggest_changes()
-    output_path = structure_path.replace(".json", "_suggestions.json")
-    suggestor_ai.save_as_json(output_path)
+    filepath = sys.argv[1]
+    api_key = sys.argv[2]
+    model = sys.argv[3]
+    policy_path = sys.argv[4]
+    custom_path = sys.argv[5]
 
-    print(f"Suggestions saved to: {output_path}")
+    # Load and merge prompts
+    with open(policy_path, encoding="utf-8") as f:
+        base_prompt = f.read().strip()
+    full_prompt = base_prompt
+    if os.path.exists(custom_path):
+        with open(custom_path, encoding="utf-8") as f:
+            custom = f.read().strip()
+        full_prompt += "\n\n" + custom
+
+    # Set up logger
+    logger = logging.getLogger("ai-test")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+
+    ai = JBGLangImprovSuggestorAI(api_key, model, full_prompt, logger)
+    ai.load_structure(filepath)
+    ai.suggest_changes_token_aware_batching()
+    ai.save_as_json()
 
 if __name__ == "__main__":
     main()
+

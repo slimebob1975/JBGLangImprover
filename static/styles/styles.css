@@ -45,6 +45,50 @@ button:hover {
     background-color: #1c6fa1;
 }
 
+form {
+    max-width: 500px;
+    margin: 0 auto;
+    padding: 15px;
+    background-color: #fdfdfd;
+    border-radius: 8px;
+    box-shadow: 0 0 8px rgba(0,0,0,0.1);
+    font-family: sans-serif;
+}
+
+form label {
+    font-weight: bold;
+    display: block;
+    margin-top: 10px;
+    margin-bottom: 5px;
+}
+
+form input,
+form select,
+form textarea {
+    width: 100%;
+    padding: 8px;
+    font-size: 1rem;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+form button {
+    margin-top: 10px;
+    padding: 10px 20px;
+    font-size: 1rem;
+    background-color: #2979be;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+form button:hover {
+    background-color: #1565c0;
+}
+
 /* Status and output */
 #status {
     font-weight: bold;

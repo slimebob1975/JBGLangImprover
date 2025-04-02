@@ -13,9 +13,25 @@
         <h1>JBG klarspråkning</h1>
         <h3><em>Obs! Endast .docx- eller pdf-filer</em></h3>
         <form id="uploadForm">
-            <input type="file" id="documentFile" name="file" accept=".pdf,.docx" required>
-                <button type="submit">Klarspråka!</button>
-        </form>
+            <label for="documentFile"><strong>1. Ladda upp ett dokument:</strong></label><br>
+            <input type="file" id="documentFile" name="file" accept=".pdf,.docx" required><br><br>
+          
+            <label for="apiKey"><strong>2. Ange din OpenAI API-nyckel:</strong></label><br>
+            <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required><br><br>
+          
+            <label for="model"><strong>3. Välj modell:</strong></label><br>
+            <select id="model" name="model">
+                <option value="gpt-4o" selected>gpt-4o - Ny snabb & billig GPT-4-modell</option>
+                <option value="gpt-4">gpt-4 – Högsta noggrannhet, långsammare, dyrare</option>
+                <option value="gpt-4-turbo">gpt-4-turbo – Snabbare, billigare, mycket hög kvalitet</option>
+                <option value="gpt-3.5-turbo">gpt-3.5-turbo – Snabbast och billigast, men mindre exakt</option>
+            </select><br><br>
+          
+            <label for="customPrompt"><strong>4. Valfri promptinstruktion:</strong></label><br>
+            <textarea id="customPrompt" name="customPrompt" rows="6" placeholder="Tillägg till standardprompten..."></textarea><br><br>
+          
+            <button type="submit">Klarspråka!</button>
+          </form>
         <p id="status"></p>
 
         <!-- A spinner that spins while executing -->

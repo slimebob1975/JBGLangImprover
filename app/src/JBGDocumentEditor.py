@@ -117,7 +117,7 @@ class JBGDocumentEditor:
         for change in self.changes:
             key = (change.get("paragraph"), change.get("old"))
             if key not in applied_changes:
-                self.logger.error(f"⚠️ No match found for '{change['old']}' in paragraph {change['paragraph']}.")
+                self.logger.error(f"❌No match found for '{change['old']}' in paragraph {change['paragraph']}.")
 
         return doc
 
@@ -187,7 +187,7 @@ class JBGDocumentEditor:
             page = doc[page_index]
             rects = page.search_for(change["old"])
             if not rects:
-                self.logger.error(f"No match found for '{change['old']}' on page {change['page']}")
+                self.logger.error(f"❌No match found for '{change['old']}' on page {change['page']}")
                 continue
 
             for rect in rects:
@@ -256,7 +256,7 @@ class JBGDocumentEditor:
                 match_found = bool(rects)
 
             if not match_found:
-                self.logger.error(f"No match found for '{old}' on page {change['page']}.")
+                self.logger.error(f"❌No match found for '{old}' on page {change['page']}.")
 
         self._deduplicate_annotations(doc)
         return doc

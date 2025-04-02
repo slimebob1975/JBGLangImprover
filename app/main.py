@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Request
+from fastapi import FastAPI, File, UploadFile, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -9,7 +9,9 @@ from datetime import datetime
 import time
 from app.src.JBGLanguageImprover import JBGLanguageImprover
 
-def clean_old_uploads(directory, logger, max_age_hours=1):
+KEEP_FILES_HOURS = 24
+
+def clean_old_uploads(directory, logger, max_age_hours=KEEP_FILES_HOURS):
     now = time.time()
     max_age_seconds = max_age_hours * 3600
 
@@ -65,7 +67,8 @@ def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
+    custom_prompt: str = Form("")):
     
     # Create fresh timestamp for each request
     # Create timestamped log file for this run
@@ -82,16 +85,22 @@ async def upload_file(file: UploadFile = File(...)):
     clean_old_uploads(UPLOAD_DIR, logger)
     logger.info(f"📥 Received file: {file.filename}")
     logging.info(f"Saving to: {input_path}")
+    
+    # Load base prompt policy from file
+    with open(os.path.join(BASE_DIR, "policy", "prompt_policy.md"), encoding="utf-8") as f:
+        base_prompt = f.read().strip()
 
-    # Use relative paths to avoid FileNotFoundError
-    key_path = os.path.join(BASE_DIR, "openai", "azure_keys.json")
-    policy_path = os.path.join(BASE_DIR, "policy", "prompt_policy.md")
+    # Merge with custom prompt if provided
+    full_prompt = base_prompt
+    if custom_prompt:
+        full_prompt += "\n\nSpecifika instruktioner:\n" + custom_prompt.strip()
 
     # Run language improvement pipeline
     improver = JBGLanguageImprover(
         input_path=input_path,
-        key_file=key_path,
-        policy_file=policy_path,
+        api_key=api_key,
+        model=model,
+        prompt_policy=full_prompt,
         logger=logger
     )
     output_path = improver.run()
