@@ -12,6 +12,10 @@
     <div id="wrapper">
         <h1>JBG klarspråkning</h1>
         <h3><em>Obs! Endast .docx- eller pdf-filer</em></h3>
+        <!-- A spinner that spins while executing -->
+        <div id="spinner-container">
+            <div class="spinner"></div>
+        </div>
         <form id="uploadForm">
             <label for="documentFile"><strong>1. Ladda upp ett dokument:</strong></label><br>
             <input type="file" id="documentFile" name="file" accept=".pdf,.docx" required><br><br>
@@ -34,10 +38,6 @@
           </form>
         <p id="status"></p>
 
-        <!-- A spinner that spins while executing -->
-        <div id="spinner-container">
-            <div class="spinner"></div>
-        </div>
     </div> <!-- Wrapper -->
 
 </body>

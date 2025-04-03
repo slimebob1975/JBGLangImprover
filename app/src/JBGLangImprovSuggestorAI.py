@@ -124,7 +124,7 @@ class JBGLangImprovSuggestorAI:
                 cleaned = self._clean_json_response(suggestions)
                 parsed = json.loads(cleaned)
                 all_suggestions.extend(parsed)
-                self.logger.info(f"✅ Executed API requests #{i}.")
+                self.logger.info(f"✅ Executed API requests #{i+1}.")
             except Exception as e:
                 self.logger.error(f"Error in chunk {i+1}: {e}")
 
