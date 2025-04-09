@@ -1,9 +1,8 @@
 import os
 import json
-from docx import Document
+import docx
 import fitz  # PyMuPDF
 import sys
-import logging
 
 class DocumentStructureExtractor:
     def __init__(self, filepath, logger):
@@ -22,18 +21,21 @@ class DocumentStructureExtractor:
         return self.structure
 
     def _extract_docx(self):
-        doc = Document(self.filepath)
+        doc = docx.Document(self.filepath)
         structure = {
             "type": "docx",
             "paragraphs": []
         }
-        for i, para in enumerate(doc.paragraphs, start=1):
+
+        for xml_index, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             structure["paragraphs"].append({
-                "paragraph": i,
+                "paragraph": len(structure["paragraphs"]) + 1,  # visible index
+                "xml_index": xml_index,  # real docx index
                 "text": text,
                 "empty": not bool(text)
             })
+
         return structure
 
     def _extract_pdf(self):

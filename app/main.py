@@ -29,7 +29,7 @@ def clean_old_uploads(directory, logger, max_age_hours=KEEP_FILES_HOURS):
 def setup_run_logger(log_path):
     
     logger = logging.getLogger(f"run-{log_path}")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False  # 🔴 Prevent duplicate output from parent loggers
 
     # Clear any previous handlers for safety

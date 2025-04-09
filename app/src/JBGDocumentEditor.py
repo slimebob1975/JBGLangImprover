@@ -1,4 +1,4 @@
-from docx import Document
+import docx
 from docx.shared import RGBColor
 import os
 import sys
@@ -7,9 +7,10 @@ import shutil
 import json
 import fitz # PyMuPDF
 import re
-from app.src.JBGTrackedChangesInserter import JBGTrackedChangesInserter
 
 DEBUG = False
+SUGGESTION = "Förslag"
+MOTIVATION = "Motivering"
 
 class JBGDocumentEditor:
     
@@ -45,9 +46,9 @@ class JBGDocumentEditor:
 
             # Choose method based on file type
             if self.filepath.endswith(".docx"):
-                self.edited_document = self._edit_docx_tracked()
+                self.edited_document = self._edit_docx()
             elif self.filepath.endswith(".pdf"):
-                self._annotate_pdf()
+                self.edited_document = self._annotate_pdf()
             else:
                 raise ValueError("Unsupported file format. Use .docx or .pdf!")
 
@@ -55,26 +56,34 @@ class JBGDocumentEditor:
             self.logger.error(f"❌ Failed to apply changes: {e}")
             raise
 
-
     def save_edited_document(self, output_path=None):
-            
+
+        if output_path is None:
+            base, ext = os.path.splitext(self.filepath)
+            suffix = "_edited" if ext.lower() == ".docx" else "_annotated"
+            output_path = f"{base}{suffix}{ext}"
+
         if self.edited_document:
-            if self.ext == ".pdf":
-                if output_path is None:
-                    output_path = self.filepath.replace(".pdf", "_annotated.pdf")
-                self.edited_document.save(output_path, garbage=4, deflate=True)
-                self.edited_document.close()
-            elif self.ext == ".docx":
-                if output_path is None:
-                    output_path = self.filepath.replace(".docx", "_edited.docx")
+            try:
                 self.edited_document.save(output_path)
-            else:
-                raise ValueError("Unsupported file type. Use.docx or.pdf")
-            return output_path
+                self.logger.info(f"💾 Saved document with visual edits or tracked changes to: {output_path}")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to save edited document: {e}")
+                raise
+        else:
+            try:
+                if self.filepath != output_path:
+                    shutil.copyfile(self.filepath, output_path)
+                    self.logger.info(f"📝 Returned already-saved document with comments or annotations: {output_path}")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to copy saved file: {e}")
+                raise
+
+        return output_path
 
     def _edit_docx(self):
         
-        doc = Document(self.filepath)
+        doc = docx.Document(self.filepath)
         self._apply_to_empty_paragraphs(doc)
         
         applied_changes = set()
@@ -134,6 +143,15 @@ class JBGDocumentEditor:
                 elif kind == "insert":
                     run.font.color.rgb = RGBColor(0, 128, 0)
 
+                    # Attach comment if available
+                    for change in applicable_changes:
+                        if change["new"] == val and "motivation" in change:
+                            run.add_comment(
+                                text=change["motivation"],
+                                author="JBG klarspråkningstjänst",
+                                initials="JBG"
+                            )
+
         self._suggest_nearby_paragraphs(doc)
         
         for change in self.changes:
@@ -142,44 +160,6 @@ class JBGDocumentEditor:
                 self.logger.error(f"❌No match found for '{change['old']}' in paragraph {change['paragraph']}.")
 
         return doc
-
-    def _edit_docx_tracked(self):
-
-        try:
-            inserter = JBGTrackedChangesInserter(self.filepath, logger=self.logger)
-            inserter.enable_track_changes()
-
-            changes_applied = 0
-            for change in self.changes:
-                para_index = change.get("paragraph")
-                old = change.get("old")
-                new = change.get("new")
-
-                if not all([para_index, old, new]):
-                    continue
-
-                paras = inserter.doc_tree.xpath('//w:p', namespaces=inserter.namespace)
-                if 1 <= para_index <= len(paras):
-                    para = paras[para_index - 1]
-                    success = inserter.apply_to_paragraph(para, old, new)
-                    if success:
-                        self.logger.info(f"✅ Tracked change applied: '{old}' → '{new}' in paragraph {para_index}")
-                        changes_applied += 1
-                    else:
-                        self.logger.error(f"❌ Could not find '{old}' in paragraph {para_index}")
-                else:
-                    self.logger.warning(f"⚠️ Paragraph number {para_index} is out of bounds.")
-
-            if changes_applied == 0:
-                raise ValueError("No changes could be applied using tracked insertions.")
-
-            inserter.save()
-            return Document(self.filepath)  # Reload modified document for consistency
-
-        except Exception as e:
-            self.logger.warning(f"⚠️ Tracked changes failed, falling back to visual markup. Reason: {e}")
-            return self._edit_docx()
-
     
     def _suggest_nearby_paragraphs(self, doc):
         total = len(doc.paragraphs)
@@ -216,6 +196,7 @@ class JBGDocumentEditor:
                     para.text = change["new"]
                     self.logger.info(f"Filled empty paragraph {para_index} with: {change['new']}")
 
+    
     @staticmethod
     def _normalize_text(text):
         # Replace all whitespace (tabs, newlines, etc.) with single spaces
@@ -270,6 +251,7 @@ class JBGDocumentEditor:
 
             old = change["old"]
             new = change.get("new", "")
+            motivation = change.get("motivation", "")
             target_line = change.get("line")
             page = doc[page_index]
 
@@ -288,7 +270,7 @@ class JBGDocumentEditor:
                         for rect in rects:
                             highlight = page.add_highlight_annot(rect)
                             if new:
-                                highlight.set_info(content=f"{new}")
+                                highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
                         match_found = True
                         self.logger.info(f"✅ Applied: '{old}' → '{new}' on page {page_index + 1}, line {target_line + 1}")
                         break
@@ -302,7 +284,7 @@ class JBGDocumentEditor:
                             for rect in rects:
                                 highlight = page.add_highlight_annot(rect)
                                 if new:
-                                    highlight.set_info(content=f"{new}")
+                                    highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
                             self.logger.warning(f"Could not find '{old}' on page {change['page']}, line {target_line} — did you mean line {line_no}?")
                             match_found = True
                             break
@@ -312,7 +294,7 @@ class JBGDocumentEditor:
                 for rect in rects:
                     highlight = page.add_highlight_annot(rect)
                     if new:
-                        highlight.set_info(content=f"{new}")
+                        highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
                 match_found = bool(rects)
 
             if not match_found:
