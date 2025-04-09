@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-python-docx
+bayoo-docx
 PyMuPDF
 pypdf
 openai
