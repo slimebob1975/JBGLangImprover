@@ -31,6 +31,13 @@ input[type="file"] {
     margin-bottom: 1rem;
 }
 
+.form-inline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
 button {
     padding: 10px 20px;
     background-color: #2979be;

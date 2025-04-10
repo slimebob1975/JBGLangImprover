@@ -8,11 +8,14 @@ import logging
 
 class JBGLanguageImprover:
         
-    def __init__(self, input_path, api_key, model, prompt_policy, logger):
+    def __init__(self, input_path, api_key, model, prompt_policy, temperature, include_comments, docx_mode, logger):
         self.input_path = input_path
         self.api_key = api_key
         self.model = model
         self.prompt_policy = prompt_policy
+        self.temperature = temperature
+        self.include_comments = include_comments
+        self.docx_mode = docx_mode
         self.logger = logger
         self.structure_json = input_path.replace(os.path.splitext(input_path)[1], "_structure.json")
         self.suggestions_json = input_path.replace(os.path.splitext(input_path)[1], "_suggestions.json")
@@ -25,13 +28,13 @@ class JBGLanguageImprover:
         self.structure_json = extractor.save_as_json()
 
         self.logger.info("🧠 Generating suggestions with AI...")
-        ai = JBGLangImprovSuggestorAI(self.api_key, self.model, self.prompt_policy, self.logger)
+        ai = JBGLangImprovSuggestorAI(self.api_key, self.model, self.prompt_policy, self.temperature, self.logger)
         ai.load_structure(self.structure_json)
         ai.suggest_changes_token_aware_batching()
         self.suggestions_json = ai.save_as_json()
 
         self.logger.info("✏️ Applying suggestions to document...")
-        editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.logger)
+        editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_comments, self.docx_mode, self.logger)
         editor.apply_changes()
         output_path = editor.save_edited_document()
 

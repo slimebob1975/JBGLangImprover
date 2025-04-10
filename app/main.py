@@ -68,7 +68,8 @@ def home(request: Request):
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
-    custom_prompt: str = Form("")):
+    custom_prompt: str = Form(""), temperature: float = Form(0.7), include_comments: bool = Form(True), \
+    docx_mode: str = Form("simple")):
     
     # Create fresh timestamp for each request
     # Create timestamped log file for this run
@@ -85,6 +86,9 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
     clean_old_uploads(UPLOAD_DIR, logger)
     logger.info(f"📥 Received file: {file.filename}")
     logging.info(f"Saving to: {input_path}")
+    logger.info(f"🌡️ Temperature: {temperature}")
+    logger.info(f"💬 Include comments: {include_comments}")
+    logger.info(f"📝 DOCX markup mode: {docx_mode}")
     
     # Load base prompt policy from file
     with open(os.path.join(BASE_DIR, "policy", "prompt_policy.md"), encoding="utf-8") as f:
@@ -101,6 +105,9 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
         api_key=api_key,
         model=model,
         prompt_policy=full_prompt,
+        temperature=temperature,
+        include_comments=include_comments,
+        docx_mode=docx_mode,
         logger=logger
     )
     output_path = improver.run()

@@ -10,11 +10,12 @@ MAX_TOKEN_PER_CALL = 3000
 
 class JBGLangImprovSuggestorAI:
     
-    def __init__(self, api_key, model, prompt_policy, logger):
+    def __init__(self, api_key, model, prompt_policy, temperature, logger):
         
         self.api_key = api_key
         self.model = model
         self.policy_prompt = prompt_policy
+        self.temperature = temperature
         self.logger = logger
         self.file_path = None
         self.json_structured_document = None
@@ -55,7 +56,7 @@ class JBGLangImprovSuggestorAI:
             response = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=0.7
+                temperature=self.temperature
             )
             suggestions = response.choices[0].message.content
             cleaned_suggestions = self._clean_json_response(suggestions)
@@ -118,7 +119,7 @@ class JBGLangImprovSuggestorAI:
                 response = client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    temperature=0.7
+                    temperature=self.temperature
                 )
                 suggestions = response.choices[0].message.content
                 cleaned = self._clean_json_response(suggestions)

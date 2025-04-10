@@ -1,5 +1,6 @@
 import docx
 from docx.shared import RGBColor
+from docx.enum.text import WD_UNDERLINE
 import os
 import sys
 import uuid
@@ -14,14 +15,16 @@ MOTIVATION = "Motivering"
 
 class JBGDocumentEditor:
     
-    def __init__(self, filepath, changes_path, logger):
+    def __init__(self, filepath, changes_path, include_comments, docx_mode, logger):
         """
         :param filepath: Path to the input document (.docx or .pdf)
         :param changes_path: Path to the suggested changes JSON file
         """
         self.filepath = filepath
-        self.logger = logger
         self.changes = self._get_changes_from_json(changes_path)  
+        self.logger = logger
+        self.include_comments = include_comments
+        self.docx_mode = docx_mode  # "simple" or "tracked"
         self.ext = os.path.splitext(filepath)[1].lower()
         self.edited_document = None
 
@@ -46,7 +49,10 @@ class JBGDocumentEditor:
 
             # Choose method based on file type
             if self.filepath.endswith(".docx"):
-                self.edited_document = self._edit_docx()
+                if self.docx_mode == "tracked":
+                    self.edited_document = self._edit_docx_tracked()
+                else:
+                    self.edited_document = self._edit_docx()
             elif self.filepath.endswith(".pdf"):
                 self.edited_document = self._annotate_pdf()
             else:
@@ -141,16 +147,21 @@ class JBGDocumentEditor:
                     run.font.strike = True
                     run.font.color.rgb = RGBColor(255, 0, 0)
                 elif kind == "insert":
-                    run.font.color.rgb = RGBColor(0, 128, 0)
+                    if self.docx_mode == "tracked":
+                        run.font.color.rgb = RGBColor(255, 0, 0)
+                        run.font.underline = WD_UNDERLINE.SINGLE
+                    else:
+                        run.font.color.rgb = RGBColor(0, 128, 0)
 
                     # Attach comment if available
-                    for change in applicable_changes:
-                        if change["new"] == val and "motivation" in change:
-                            run.add_comment(
-                                text=change["motivation"],
-                                author="JBG klarspråkningstjänst",
-                                initials="JBG"
-                            )
+                    if self.include_comments:
+                        for change in applicable_changes:
+                            if change["new"] == val and "motivation" in change:
+                                run.add_comment(
+                                    text=change["motivation"],
+                                    author="JBG klarspråkningstjänst",
+                                    initials="JBG"
+                                )
 
         self._suggest_nearby_paragraphs(doc)
         
@@ -197,6 +208,14 @@ class JBGDocumentEditor:
                     self.logger.info(f"Filled empty paragraph {para_index} with: {change['new']}")
 
     
+    def _edit_docx_tracked(self):
+        
+        self.logger.info("🚧 Tracked changes generation not implemented yet.")
+        
+        # Optionally call self._edit_docx() for now, or raise NotImplementedError
+        return self._edit_docx()
+
+    
     @staticmethod
     def _normalize_text(text):
         # Replace all whitespace (tabs, newlines, etc.) with single spaces
@@ -212,31 +231,6 @@ class JBGDocumentEditor:
         text = re.sub(r"(?<=[a-zA-Z])\d{1,3}(?=[.,])", "", text)
 
         return text.strip()
-    
-    def _annotate_pdf_simple(self):
-    
-        doc = fitz.open(self.filepath)
-
-        for change in self.changes:
-            if "page" not in change or "old" not in change:
-                continue
-
-            page_index = change["page"] - 1
-            if page_index >= len(doc):
-                continue
-
-            page = doc[page_index]
-            rects = page.search_for(change["old"])
-            if not rects:
-                self.logger.error(f"❌No match found for '{change['old']}' on page {change['page']}")
-                continue
-
-            for rect in rects:
-                highlight = page.add_highlight_annot(rect)
-                if "new" in change:
-                    highlight.set_info(content=f"Suggestion: replace with '{change['new']}'")
-
-        return doc
     
     def _annotate_pdf(self):
         doc = fitz.open(self.filepath)
@@ -270,7 +264,10 @@ class JBGDocumentEditor:
                         for rect in rects:
                             highlight = page.add_highlight_annot(rect)
                             if new:
-                                highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
+                                if self.include_comments:
+                                    highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
+                                else:
+                                    highlight.set_info(content=f"{SUGGESTION}: {new}")
                         match_found = True
                         self.logger.info(f"✅ Applied: '{old}' → '{new}' on page {page_index + 1}, line {target_line + 1}")
                         break
@@ -284,7 +281,10 @@ class JBGDocumentEditor:
                             for rect in rects:
                                 highlight = page.add_highlight_annot(rect)
                                 if new:
-                                    highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
+                                    if self.include_comments:
+                                        highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
+                                    else:
+                                        highlight.set_info(content=f"{SUGGESTION}: {new}")
                             self.logger.warning(f"Could not find '{old}' on page {change['page']}, line {target_line} — did you mean line {line_no}?")
                             match_found = True
                             break
@@ -294,7 +294,10 @@ class JBGDocumentEditor:
                 for rect in rects:
                     highlight = page.add_highlight_annot(rect)
                     if new:
-                        highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
+                        if self.include_comments:
+                            highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
+                        else:
+                            highlight.set_info(content=f"{SUGGESTION}: {new}")
                 match_found = bool(rects)
 
             if not match_found:

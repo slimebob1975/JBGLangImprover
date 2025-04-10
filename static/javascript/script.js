@@ -4,6 +4,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (savedKey) {
       document.getElementById("apiKey").value = savedKey;
     }
+
+    const temperatureSlider = document.getElementById("temperature");
+    const tempDisplay = document.getElementById("tempDisplay");
+
+    if (temperatureSlider && tempDisplay) {
+        temperatureSlider.addEventListener("input", function () {
+            tempDisplay.textContent = this.value;
+        });
+    }
   });
 
 document.getElementById("uploadForm").addEventListener("submit", async (e) => {
@@ -14,6 +23,10 @@ const file = fileInput.files[0];
 const apiKey = document.getElementById("apiKey").value.trim();
 const model = document.getElementById("model").value;
 const customPrompt = document.getElementById("customPrompt").value.trim();
+
+const temperature = parseFloat(document.getElementById("temperature").value);
+const includeComments = document.getElementById("includeComments").checked;
+const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
 
 const status = document.getElementById("status");
 const spinner = document.getElementById("spinner-container");
@@ -33,6 +46,9 @@ formData.append("file", file);
 formData.append("api_key", apiKey);
 formData.append("model", model);
 formData.append("custom_prompt", customPrompt);
+formData.append("temperature", temperature);
+formData.append("include_comments", includeComments);
+formData.append("docx_mode", docxMode);
 
 // Save the API key for future visits
 localStorage.setItem("openai_api_key", apiKey);
