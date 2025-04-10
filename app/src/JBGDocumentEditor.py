@@ -1,7 +1,7 @@
 import docx
 from docx.shared import RGBColor
 from docx.enum.text import WD_UNDERLINE
-import datetime
+from datetime import datetime, timezone
 import os
 import sys
 import uuid
@@ -12,6 +12,7 @@ import re
 import zipfile
 from lxml import etree
 from tempfile import mkdtemp
+from copy import deepcopy
 
 DEBUG = False
 SUGGESTION = "Förslag"
@@ -230,27 +231,55 @@ class JBGDocumentEditor:
 
         # Convert to tracked changes based on visual styles
         tracked_doc_path = self._convert_markup_to_tracked(intermediate_path)
+        
+        # Check if the produced document is valid
+        self._validate_docx_integrity(os.path.dirname(tracked_doc_path))
 
         # Re-open and return final document for saving
         final_doc = docx.Document(tracked_doc_path)
         return final_doc
+    
+    def _enable_tracked_changes_settings(self, settings_xml_path):
+       
+        import xml.etree.ElementTree as ET
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        ET.register_namespace("w", ns["w"])
+
+        tree = ET.parse(settings_xml_path)
+        root = tree.getroot()
+
+        # Only add if not already present
+        if root.find("w:trackRevisions", namespaces=ns) is None:
+            track = ET.Element(f"{{{ns['w']}}}trackRevisions")
+            root.insert(0, track)
+            tree.write(settings_xml_path, xml_declaration=True, encoding="UTF-8")
+            self.logger.info("📌 Enabled <w:trackRevisions/> in settings.xml")
 
     
     def _convert_markup_to_tracked(self, input_docx_path):
         """
-        Post-processes a .docx file to wrap colored/struck/underlined text into native Word
-        tracked-change XML tags: <w:del> and <w:ins>.
+        Converts simple visual markups in a .docx file (like red strike/underline)
+        into native Word tracked changes using <w:del> and <w:ins>.
         Returns the filepath of the modified document.
         """
         try:
             temp_dir = mkdtemp()
-            tracked_docx_path = os.path.join(temp_dir, os.path.basename(input_docx_path).replace("_intermediate", "_tracked"))
+            tracked_docx_path = os.path.join(
+                temp_dir, os.path.basename(input_docx_path).replace("_intermediate", "_tracked")
+            )
 
             with zipfile.ZipFile(input_docx_path, 'r') as zin:
                 zin.extractall(temp_dir)
+                
+            # Enable tracked changes in settings.xml
+            settings_path = os.path.join(temp_dir, "word", "settings.xml")
+            if os.path.exists(settings_path):
+                self._enable_tracked_changes_settings(settings_path)
 
+            # Start working with the document!
             document_xml_path = os.path.join(temp_dir, "word", "document.xml")
             parser = etree.XMLParser(remove_blank_text=True)
+
             with open(document_xml_path, "rb") as f:
                 tree = etree.parse(f, parser)
 
@@ -267,31 +296,19 @@ class JBGDocumentEditor:
                 is_strike = strike is not None
                 is_underline = underline is not None
 
-                parent = run.getparent()
                 if color_val == "FF0000":
-                    if is_strike:
-                        wrapper_tag = "del"
-                    elif is_underline:
-                        wrapper_tag = "ins"
-                    else:
-                        continue  # Skip if neither (defensive)
-                    wrapper = etree.Element(f"{{{self.nsmap['w']}}}{wrapper_tag}")
-                    wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG Klarspråkningstjänst")
-                    wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.utcnow().isoformat())
+                    if is_underline:
+                        result = self._handle_insertions_and_comments(run)
+                    elif is_strike:
+                        result = self._handle_deletions(run)
+                    if result == -1:
+                        continue
                     
-                    # Strip styling from the run
-                    rpr = run.find("w:rPr", namespaces=self.nsmap)
-                    if rpr is not None:
-                        rpr.clear()
-                    else:
-                        rpr = etree.SubElement(run, f"{{{self.nsmap['w']}}}rPr")
-                    
-                    parent.replace(run, wrapper)
-                    wrapper.append(run)
-
+            # Write back modified XML
             with open(document_xml_path, "wb") as f:
                 tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
+            # Zip back into a new docx
             with zipfile.ZipFile(tracked_docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
                 for root, _, files in os.walk(temp_dir):
                     for filename in files:
@@ -301,9 +318,188 @@ class JBGDocumentEditor:
 
             self.logger.info(f"🔁 Converted markup to tracked changes in: {tracked_docx_path}")
             return tracked_docx_path
+
         except Exception as ex:
-            self.logger.warning(f"🚧 Tracked changes generation not fully functioning yet: {ex}.")
+            self.logger.warning(f"🚧 Tracked changes generation not fully functioning yet: {ex}")
             return input_docx_path
+    
+    def _handle_insertions_and_comments(self, run):
+        parent = run.getparent()
+        insertion_index = parent.index(run)
+
+        # Clone and clean run
+        run_copy = deepcopy(run)
+        comment_ref = run_copy.find("w:commentReference", namespaces=self.nsmap)
+        if comment_ref is not None:
+            run_copy.remove(comment_ref)
+
+        rpr_copy = run_copy.find("w:rPr", namespaces=self.nsmap)
+        if rpr_copy is not None:
+            rpr_copy.clear()
+        else:
+            etree.SubElement(run_copy, f"{{{self.nsmap['w']}}}rPr")
+
+        # Wrap in a tracked-change element
+        wrapper = etree.Element(f"{{{self.nsmap['w']}}}ins")
+        wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG Klarspråkningstjänst")
+        wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.now(timezone.utc).isoformat())
+
+        # Always wrap <w:r> inside <w:del> or <w:ins>
+        wrapper.append(run_copy)
+
+        # Replace run
+        parent.remove(run)
+        parent.insert(insertion_index, wrapper)
+
+        # Handle comment (only for insertions)
+        if comment_ref is not None:
+            comment_ref_run = etree.Element(f"{{{self.nsmap['w']}}}r")
+            comment_ref_run.append(deepcopy(comment_ref))
+            parent.insert(insertion_index + 1, comment_ref_run)
+            
+        return 0
+            
+    def _handle_deletions(self, run):
+
+        parent = run.getparent()  # Expected to be <w:p>
+        insertion_index = parent.index(run)
+
+        # Clone the run
+        run_copy = deepcopy(run)
+
+        # Remove commentReference if any
+        comment_ref = run_copy.find("w:commentReference", namespaces=self.nsmap)
+        if comment_ref is not None:
+            run_copy.remove(comment_ref)
+
+        # Clean formatting
+        rpr = run_copy.find("w:rPr", namespaces=self.nsmap)
+        if rpr is not None:
+            rpr.clear()
+        else:
+            etree.SubElement(run_copy, f"{{{self.nsmap['w']}}}rPr")
+
+        # Extract the <w:t>
+        text_elem = run_copy.find("w:t", namespaces=self.nsmap)
+        if text_elem is None:
+            return -1
+
+        text_value = text_elem.text or ""
+
+        # Create <w:delText> to replace <w:t>
+        del_text_elem = etree.Element(f"{{{self.nsmap['w']}}}delText")
+        del_text_elem.text = text_value
+        run_copy.remove(text_elem)
+        run_copy.append(del_text_elem)
+
+        # Wrap in <w:del>
+        del_tag = etree.Element(f"{{{self.nsmap['w']}}}del")
+        del_tag.set(f"{{{self.nsmap['w']}}}author", "JBG Klarspråkningstjänst")
+        del_tag.set(f"{{{self.nsmap['w']}}}date", datetime.now(timezone.utc).isoformat())
+        del_tag.set(f"{{{self.nsmap['w']}}}rsidDel", "00000000")
+        del_tag.append(run_copy)
+
+        # Ensure parent <w:p> has rsidDel too
+        if parent.tag.endswith("p") and f"{{{self.nsmap['w']}}}rsidDel" not in parent.attrib:
+            parent.set(f"{{{self.nsmap['w']}}}rsidDel", "00000000")
+
+        # Replace <w:r> with <w:del>
+        parent.remove(run)
+        parent.insert(insertion_index, del_tag)
+
+        return 0
+    
+    def _validate_docx_integrity(self, docx_unzipped_dir):
+        import xml.etree.ElementTree as ET
+        import os
+
+        ns = {
+            "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+            "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+            "ct": "http://schemas.openxmlformats.org/package/2006/content-types"
+        }
+
+        # 0. Check that deletions are proper (they cause most problems)
+        document_path = os.path.join(docx_unzipped_dir, "word", "document.xml")
+        self._validate_deletion_structure(document_path)
+        
+        # 1. Extract all comment IDs from document.xml
+        doc_tree = ET.parse(document_path)
+        comment_refs = doc_tree.findall(".//w:commentReference", namespaces=ns)
+        comment_ids_in_doc = {int(c.attrib[f"{{{ns['w']}}}id"]) for c in comment_refs}
+
+        # Also check commentRangeStart and commentRangeEnd consistency
+        range_starts = doc_tree.findall(".//w:commentRangeStart", namespaces=ns)
+        range_ends = doc_tree.findall(".//w:commentRangeEnd", namespaces=ns)
+        range_start_ids = {int(r.attrib[f"{{{ns['w']}}}id"]) for r in range_starts}
+        range_end_ids = {int(r.attrib[f"{{{ns['w']}}}id"]) for r in range_ends}
+        if range_start_ids != range_end_ids:
+            raise Exception("❌ Comment range start/end IDs do not match.")
+
+        # 2. Load comments.xml and check IDs
+        comments_path = os.path.join(docx_unzipped_dir, "word", "comments.xml")
+        if not os.path.exists(comments_path):
+            raise Exception("❌ comments.xml is missing.")
+
+        comments_tree = ET.parse(comments_path)
+        comment_elems = comments_tree.findall(".//w:comment", namespaces=ns)
+        comment_ids_defined = {int(c.attrib[f"{{{ns['w']}}}id"]) for c in comment_elems}
+
+        # 3. Validate that every used ID is defined
+        undefined_ids = comment_ids_in_doc - comment_ids_defined
+        if undefined_ids:
+            raise Exception(f"❌ Undefined comment IDs found in document.xml: {undefined_ids}")
+
+        # 4. Check document.xml.rels for comment relationship
+        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
+        rels_tree = ET.parse(rels_path)
+        rels = rels_tree.findall(".//rel:Relationship", namespaces=ns)
+        comment_rels = [
+            r for r in rels
+            if r.attrib.get("Type") == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+        ]
+        if not comment_rels:
+            raise Exception("❌ Missing relationship to comments.xml in document.xml.rels")
+
+        # 5. Check [Content_Types].xml
+        content_types_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
+        ct_tree = ET.parse(content_types_path)
+        overrides = ct_tree.findall(".//ct:Override", namespaces=ns)
+        if not any(o.attrib.get("PartName") == "/word/comments.xml" for o in overrides):
+            raise Exception("❌ Missing override for comments.xml in [Content_Types].xml")
+
+        self.logger.info("✅ DOCX tracked-change integrity check passed.")
+
+    def _validate_deletion_structure(self, document_xml_path):
+
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(document_xml_path, parser)
+        root = tree.getroot()
+
+        invalid_del_blocks = []
+
+        for del_elem in root.xpath(".//w:del", namespaces=ns):
+            parent = del_elem.getparent()
+            if parent.tag != f"{{{ns['w']}}}p":
+                invalid_del_blocks.append("Invalid placement (not inside <w:p>)")
+                continue
+
+            runs = del_elem.findall("w:r", namespaces=ns)
+            if not runs:
+                invalid_del_blocks.append("Missing <w:r> inside <w:del>")
+                continue
+
+            for run in runs:
+                if run.find("w:delText", namespaces=ns) is None:
+                    invalid_del_blocks.append("Missing <w:delText> inside <w:r> in <w:del>")
+
+        if invalid_del_blocks:
+            self.logger.warning(f"⚠️ Found {len(invalid_del_blocks)} invalid <w:del> structures.")
+            raise Exception("❌ Invalid <w:del> structures detected in document.xml.")
+
+        self.logger.info("✅ All <w:del> structures are valid (location + delText).")
+
     
     @staticmethod
     def _normalize_text(text):

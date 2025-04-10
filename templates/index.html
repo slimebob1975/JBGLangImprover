@@ -32,7 +32,7 @@
 
             <!-- Temperature Checkbox and Slider -->
             <div>
-                <label for="temperature"><strong>5. Temperatur (0 = exakt, 1 = kreativ):</strong></label>
+                <label for="temperature"><strong>5. Kreativitetsnivå (0 = låg, 1 = hög):</strong></label>
                 <div class="form-inline">
                     <input type="range" id="temperature" name="temperature" min="0" max="1" step="0.01" value="0.7">
                     <span id="tempDisplay">0.7</span>
@@ -46,10 +46,10 @@
 
             <!-- DOCX Markup Mode -->
             <div>
-                <label><strong>7. För .docx-filer:</strong></label>
+                <label><strong>7. För .docx-filer visas förändringsförslag med:</strong></label>
                 <div class="form-inline">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
-                    <label for="simpleMarking">Enkel markering</label>
+                    <label for="simpleMarking">Enkel färgmarkering</label>
 
                     <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
                     <label for="trackedChanges">Spåra ändringar (beta)</label>
