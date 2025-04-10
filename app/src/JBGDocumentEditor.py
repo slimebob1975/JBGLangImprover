@@ -268,16 +268,24 @@ class JBGDocumentEditor:
                 is_underline = underline is not None
 
                 parent = run.getparent()
-                if color_val == "FF0000" and is_strike:
-                    wrapper = etree.Element(f"{{{self.nsmap['w']}}}del")
-                    wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG")
+                if color_val == "FF0000":
+                    if is_strike:
+                        wrapper_tag = "del"
+                    elif is_underline:
+                        wrapper_tag = "ins"
+                    else:
+                        continue  # Skip if neither (defensive)
+                    wrapper = etree.Element(f"{{{self.nsmap['w']}}}{wrapper_tag}")
+                    wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG Klarspråkningstjänst")
                     wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.utcnow().isoformat())
-                    parent.replace(run, wrapper)
-                    wrapper.append(run)
-                elif color_val == "FF0000" and is_underline:
-                    wrapper = etree.Element(f"{{{self.nsmap['w']}}}ins")
-                    wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG")
-                    wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.utcnow().isoformat())
+                    
+                    # Strip styling from the run
+                    rpr = run.find("w:rPr", namespaces=self.nsmap)
+                    if rpr is not None:
+                        rpr.clear()
+                    else:
+                        rpr = etree.SubElement(run, f"{{{self.nsmap['w']}}}rPr")
+                    
                     parent.replace(run, wrapper)
                     wrapper.append(run)
 
