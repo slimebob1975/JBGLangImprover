@@ -1,6 +1,7 @@
 import docx
 from docx.shared import RGBColor
 from docx.enum.text import WD_UNDERLINE
+import datetime
 import os
 import sys
 import uuid
@@ -8,10 +9,14 @@ import shutil
 import json
 import fitz # PyMuPDF
 import re
+import zipfile
+from lxml import etree
+from tempfile import mkdtemp
 
 DEBUG = False
 SUGGESTION = "Förslag"
 MOTIVATION = "Motivering"
+NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 class JBGDocumentEditor:
     
@@ -27,6 +32,7 @@ class JBGDocumentEditor:
         self.docx_mode = docx_mode  # "simple" or "tracked"
         self.ext = os.path.splitext(filepath)[1].lower()
         self.edited_document = None
+        self.nsmap = NSMAP
 
     @staticmethod
     def _get_changes_from_json(json_filepath):
@@ -209,12 +215,87 @@ class JBGDocumentEditor:
 
     
     def _edit_docx_tracked(self):
-        
-        self.logger.info("🚧 Tracked changes generation not implemented yet.")
-        
-        # Optionally call self._edit_docx() for now, or raise NotImplementedError
-        return self._edit_docx()
+        """
+        Applies simple markup first, saves to a temporary file,
+        then converts that markup to native tracked changes.
+        """
+        # First, apply standard markup
+        self.edited_document = self._edit_docx()
 
+        # Save the interim version to disk
+        temp_base, _ = os.path.splitext(self.filepath)
+        intermediate_path = f"{temp_base}_intermediate.docx"
+        self.edited_document.save(intermediate_path)
+        self.logger.info(f"📄 Saved intermediate docx with markup to: {intermediate_path}")
+
+        # Convert to tracked changes based on visual styles
+        tracked_doc_path = self._convert_markup_to_tracked(intermediate_path)
+
+        # Re-open and return final document for saving
+        final_doc = docx.Document(tracked_doc_path)
+        return final_doc
+
+    
+    def _convert_markup_to_tracked(self, input_docx_path):
+        """
+        Post-processes a .docx file to wrap colored/struck/underlined text into native Word
+        tracked-change XML tags: <w:del> and <w:ins>.
+        Returns the filepath of the modified document.
+        """
+        try:
+            temp_dir = mkdtemp()
+            tracked_docx_path = os.path.join(temp_dir, os.path.basename(input_docx_path).replace("_intermediate", "_tracked"))
+
+            with zipfile.ZipFile(input_docx_path, 'r') as zin:
+                zin.extractall(temp_dir)
+
+            document_xml_path = os.path.join(temp_dir, "word", "document.xml")
+            parser = etree.XMLParser(remove_blank_text=True)
+            with open(document_xml_path, "rb") as f:
+                tree = etree.parse(f, parser)
+
+            for run in tree.xpath("//w:r", namespaces=self.nsmap):
+                rpr = run.find("w:rPr", namespaces=self.nsmap)
+                if rpr is None:
+                    continue
+
+                color = rpr.find("w:color", namespaces=self.nsmap)
+                strike = rpr.find("w:strike", namespaces=self.nsmap)
+                underline = rpr.find("w:u", namespaces=self.nsmap)
+
+                color_val = color.get(f"{{{self.nsmap['w']}}}val") if color is not None else None
+                is_strike = strike is not None
+                is_underline = underline is not None
+
+                parent = run.getparent()
+                if color_val == "FF0000" and is_strike:
+                    wrapper = etree.Element(f"{{{self.nsmap['w']}}}del")
+                    wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG")
+                    wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.utcnow().isoformat())
+                    parent.replace(run, wrapper)
+                    wrapper.append(run)
+                elif color_val == "FF0000" and is_underline:
+                    wrapper = etree.Element(f"{{{self.nsmap['w']}}}ins")
+                    wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG")
+                    wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.utcnow().isoformat())
+                    parent.replace(run, wrapper)
+                    wrapper.append(run)
+
+            with open(document_xml_path, "wb") as f:
+                tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+
+            with zipfile.ZipFile(tracked_docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
+                for root, _, files in os.walk(temp_dir):
+                    for filename in files:
+                        filepath = os.path.join(root, filename)
+                        archive_name = os.path.relpath(filepath, temp_dir)
+                        zout.write(filepath, archive_name)
+
+            self.logger.info(f"🔁 Converted markup to tracked changes in: {tracked_docx_path}")
+            return tracked_docx_path
+        except Exception as ex:
+            self.logger.warning(f"🚧 Tracked changes generation not fully functioning yet: {ex}.")
+            return input_docx_path
     
     @staticmethod
     def _normalize_text(text):
