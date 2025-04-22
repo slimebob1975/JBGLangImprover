@@ -3,6 +3,7 @@ import sys
 from app.src.JBGDocumentStructureExtractor import DocumentStructureExtractor
 from app.src.JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
 from app.src.JBGDocumentEditor import JBGDocumentEditor
+from app.src.JBGDocxRepairer import WordRepairer
 
 import logging
 
@@ -38,8 +39,18 @@ class JBGLanguageImprover:
         editor.apply_changes()
         output_path = editor.save_edited_document()
 
-        # End logging and close logging file
         self.logger.info(f"✅ Final improved document saved to: {output_path}")
+        
+        if editor.ext == ".docx":
+            try:
+                repair_path = output_path
+                self.logger.info(f"🔧 Try to repair the Word document if it is partly corrupted...")
+                repairer = WordRepairer(logger=self.logger)
+                repair_path = repairer.repair(repair_path)
+            except Exception as ex:
+                self.logger.info(f"❌ Failed to repair the Word document. Reason: {str(ex)}")
+            else:
+                output_path = repair_path
             
         return output_path
 

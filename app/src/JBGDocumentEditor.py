@@ -308,6 +308,10 @@ class JBGDocumentEditor:
             with open(document_xml_path, "wb") as f:
                 tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
+            # 🧼 Optional: clean invalid tracked change leftovers
+            document_xml_path = os.path.join(temp_dir, "word", "document.xml")
+            self._sanitize_document_xml(document_xml_path)
+            
             # Zip back into a new docx
             with zipfile.ZipFile(tracked_docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
                 for root, _, files in os.walk(temp_dir):
@@ -499,6 +503,40 @@ class JBGDocumentEditor:
             raise Exception("❌ Invalid <w:del> structures detected in document.xml.")
 
         self.logger.info("✅ All <w:del> structures are valid (location + delText).")
+
+    def _sanitize_document_xml(self, document_xml_path):
+
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(document_xml_path, parser)
+        root = tree.getroot()
+
+        modified = False
+
+        for del_elem in root.xpath(".//w:del", namespaces=ns):
+            for run in del_elem.xpath(".//w:r", namespaces=ns):
+                t = run.find("w:t", namespaces=ns)
+                if t is not None:
+                    # Convert to <w:delText>
+                    text_val = t.text or ""
+                    run.remove(t)
+                    del_text = etree.Element(f"{{{ns['w']}}}delText")
+                    del_text.text = text_val
+                    run.append(del_text)
+                    modified = True
+
+        # Remove empty <w:r> elements
+        for run in root.xpath("//w:r", namespaces=ns):
+            if len(run) == 0:
+                parent = run.getparent()
+                parent.remove(run)
+                modified = True
+
+        if modified:
+            with open(document_xml_path, "wb") as f:
+                tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+            self.logger.info("🧼 Sanitized document.xml for invalid <w:t> in <w:del> or empty runs.")
 
     
     @staticmethod
