@@ -312,8 +312,10 @@ class JBGDocumentEditor:
             document_xml_path = os.path.join(temp_dir, "word", "document.xml")
             self._sanitize_document_xml(document_xml_path)
             self._cleanup_docx_metadata(temp_dir)
+            self._ensure_minimal_comments_xml(temp_dir)
             self._rebuild_document_rels_if_invalid(temp_dir)
             self._validate_docx_integrity(temp_dir)
+            self._ensure_minimal_comments_structure(temp_dir)
             
             # Zip back into a new docx
             with zipfile.ZipFile(tracked_docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -624,7 +626,8 @@ class JBGDocumentEditor:
                     part_counter += 1
 
             # Common Word document parts
-            add_rel("comments.xml", "comments")
+            if os.path.exists(os.path.join(docx_unzipped_dir, "word", "comments.xml")):
+                add_rel("comments.xml", "comments")            
             add_rel("styles.xml", "styles")
             add_rel("settings.xml", "settings")
             add_rel("fontTable.xml", "fontTable")
@@ -635,6 +638,65 @@ class JBGDocumentEditor:
             tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
             self.logger.info("🛠️ Rebuilt document.xml.rels with detected relationships.")
+
+    def _ensure_minimal_comments_xml(self, docx_unzipped_dir):
+        from lxml import etree
+        import os
+
+        comments_path = os.path.join(docx_unzipped_dir, "word", "comments.xml")
+        if not os.path.exists(comments_path):
+            nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            root = etree.Element(f"{{{nsmap['w']}}}comments", nsmap=nsmap)
+            tree = etree.ElementTree(root)
+
+            os.makedirs(os.path.dirname(comments_path), exist_ok=True)
+            tree.write(comments_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+            self.logger.info("🧾 Created minimal empty comments.xml as placeholder.")
+
+    def _ensure_minimal_comments_structure(self, docx_unzipped_dir):
+        """
+        Ensures that the comments.xml exists and is minimal (even if include_comments=False),
+        and purges ghost references to removed or unused comment parts.
+        """
+        import os
+        from lxml import etree
+
+        ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        ns_ct = "http://schemas.openxmlformats.org/package/2006/content-types"
+        ns_rel = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+        # Ensure comments.xml exists (even if empty)
+        comments_path = os.path.join(docx_unzipped_dir, "word", "comments.xml")
+        if not os.path.exists(comments_path):
+            root = etree.Element(f"{{{ns_w}}}comments", nsmap={"w": ns_w})
+            tree = etree.ElementTree(root)
+            os.makedirs(os.path.dirname(comments_path), exist_ok=True)
+            tree.write(comments_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+            self.logger.info("🧾 Created fallback comments.xml")
+
+        # Remove unused references from [Content_Types].xml
+        ct_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
+        if os.path.exists(ct_path):
+            tree = etree.parse(ct_path)
+            root = tree.getroot()
+            for override in root.findall(f".//{{{ns_ct}}}Override"):
+                name = override.get("PartName", "")
+                if "commentsExtended.xml" in name or "commentsIds.xml" in name:
+                    root.remove(override)
+                    self.logger.info(f"🧹 Removed ghost content type: {name}")
+            tree.write(ct_path, pretty_print=True, xml_declaration=True, encoding="utf-8")
+
+        # Remove ghost relationships in document.xml.rels
+        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
+        if os.path.exists(rels_path):
+            tree = etree.parse(rels_path)
+            root = tree.getroot()
+            for rel in root.findall(f".//{{{ns_rel}}}Relationship"):
+                target = rel.get("Target", "")
+                if "commentsExtended.xml" in target or "commentsIds.xml" in target:
+                    root.remove(rel)
+                    self.logger.info(f"🧹 Removed ghost relationship: {target}")
+            tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="utf-8")
 
     
     @staticmethod
