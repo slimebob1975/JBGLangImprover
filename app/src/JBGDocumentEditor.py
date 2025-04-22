@@ -14,7 +14,7 @@ from lxml import etree
 from tempfile import mkdtemp
 from copy import deepcopy
 
-DEBUG = False
+DEBUG = True
 SUGGESTION = "Förslag"
 MOTIVATION = "Motivering"
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -311,6 +311,9 @@ class JBGDocumentEditor:
             # 🧼 Optional: clean invalid tracked change leftovers
             document_xml_path = os.path.join(temp_dir, "word", "document.xml")
             self._sanitize_document_xml(document_xml_path)
+            self._cleanup_docx_metadata(temp_dir)
+            self._rebuild_document_rels_if_invalid(temp_dir)
+            self._validate_docx_integrity(temp_dir)
             
             # Zip back into a new docx
             with zipfile.ZipFile(tracked_docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -472,6 +475,16 @@ class JBGDocumentEditor:
         if not any(o.attrib.get("PartName") == "/word/comments.xml" for o in overrides):
             raise Exception("❌ Missing override for comments.xml in [Content_Types].xml")
 
+        if DEBUG:
+            unknown_tags = []
+            for elem in doc_tree.iter():
+                if not elem.tag.startswith(f"{{{ns['w']}}}"):
+                    unknown_tags.append(elem.tag)
+            if unknown_tags:
+                self.logger.warning(f"🔍 Found {len(unknown_tags)} unknown tags in document.xml.")
+                for tag in set(unknown_tags):
+                    self.logger.warning(f"⚠️ Unknown element tag: {tag}")
+
         self.logger.info("✅ DOCX tracked-change integrity check passed.")
 
     def _validate_deletion_structure(self, document_xml_path):
@@ -532,11 +545,96 @@ class JBGDocumentEditor:
                 parent = run.getparent()
                 parent.remove(run)
                 modified = True
+                
+        # Log unknown attributes in <w:del>, <w:ins>
+        for elem in root.xpath(".//w:del | .//w:ins", namespaces=ns):
+            for attr in elem.attrib:
+                if not attr.startswith(f"{{{ns['w']}}}"):
+                    self.logger.warning(f"⚠️ Unexpected attribute in {elem.tag}: {attr}")
 
         if modified:
             with open(document_xml_path, "wb") as f:
                 tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
             self.logger.info("🧼 Sanitized document.xml for invalid <w:t> in <w:del> or empty runs.")
+
+    def _cleanup_docx_metadata(self, docx_unzipped_dir):
+        import xml.etree.ElementTree as ET
+
+        ns_ct = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
+        ns_rel = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+
+        # 1. Clean [Content_Types].xml
+        ct_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
+        if os.path.exists(ct_path):
+            tree = ET.parse(ct_path)
+            root = tree.getroot()
+            removed = 0
+            for part in root.findall("ct:Override", namespaces=ns_ct):
+                name = part.attrib.get("PartName", "")
+                if "commentsExtended.xml" in name or "commentsIds.xml" in name:
+                    root.remove(part)
+                    removed += 1
+            if removed:
+                tree.write(ct_path, xml_declaration=True, encoding="utf-8")
+                self.logger.info(f"🧹 Removed {removed} ghost overrides from [Content_Types].xml")
+
+        # 2. Clean word/_rels/document.xml.rels
+        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
+        if os.path.exists(rels_path):
+            tree = ET.parse(rels_path)
+            root = tree.getroot()
+            removed = 0
+            for rel in root.findall("rel:Relationship", namespaces=ns_rel):
+                target = rel.attrib.get("Target", "")
+                if "commentsExtended.xml" in target or "commentsIds.xml" in target:
+                    root.remove(rel)
+                    removed += 1
+            if removed:
+                tree.write(rels_path, xml_declaration=True, encoding="utf-8")
+                self.logger.info(f"🧹 Removed {removed} ghost relationships from document.xml.rels")
+    
+    def _rebuild_document_rels_if_invalid(self, docx_unzipped_dir):
+        import os
+        from lxml import etree
+
+        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
+        os.makedirs(os.path.dirname(rels_path), exist_ok=True)
+
+        try:
+            parser = etree.XMLParser(remove_blank_text=True)
+            etree.parse(rels_path, parser)
+            self.logger.info("✅ document.xml.rels is valid.")
+        except Exception as ex:
+            self.logger.warning(f"⚠️ document.xml.rels missing or invalid, regenerating: {ex}")
+
+            nsmap = {None: "http://schemas.openxmlformats.org/package/2006/relationships"}
+            root = etree.Element("Relationships", nsmap=nsmap)
+
+            part_counter = 1
+
+            def add_rel(target, rtype):
+                nonlocal part_counter
+                if os.path.exists(os.path.join(docx_unzipped_dir, "word", target)):
+                    etree.SubElement(root, "Relationship", {
+                        "Id": f"rId{part_counter}",
+                        "Type": f"http://schemas.openxmlformats.org/officeDocument/2006/relationships/{rtype}",
+                        "Target": target
+                    })
+                    self.logger.info(f"🔗 Added relationship for: {target}")
+                    part_counter += 1
+
+            # Common Word document parts
+            add_rel("comments.xml", "comments")
+            add_rel("styles.xml", "styles")
+            add_rel("settings.xml", "settings")
+            add_rel("fontTable.xml", "fontTable")
+            add_rel("webSettings.xml", "webSettings")
+            add_rel("theme/theme1.xml", "theme")
+
+            tree = etree.ElementTree(root)
+            tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+
+            self.logger.info("🛠️ Rebuilt document.xml.rels with detected relationships.")
 
     
     @staticmethod
