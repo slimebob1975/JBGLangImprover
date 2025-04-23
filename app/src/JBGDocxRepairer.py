@@ -280,7 +280,6 @@ class DocxXmlRepairer:
             })
             return etree.ElementTree(root)
 
-
         # 3. people.xml
         def people_tree():
             root = etree.Element("{http://schemas.microsoft.com/office/2006/metadata/customXml}personList")
