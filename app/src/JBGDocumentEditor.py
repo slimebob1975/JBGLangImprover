@@ -39,8 +39,6 @@ class JBGDocumentEditor:
     def _get_changes_from_json(json_filepath):
         with open(json_filepath, 'r', encoding='utf-8') as f:
             return json.load(f)    
-    
-    import os
 
     def apply_changes(self):
         try:
@@ -275,6 +273,9 @@ class JBGDocumentEditor:
             settings_path = os.path.join(temp_dir, "word", "settings.xml")
             if os.path.exists(settings_path):
                 self._enable_tracked_changes_settings(settings_path)
+                
+            # Fix some problems with the comments
+            self._add_extended_comment_support(temp_dir)
 
             # Start working with the document!
             document_xml_path = os.path.join(temp_dir, "word", "document.xml")
@@ -638,7 +639,7 @@ class JBGDocumentEditor:
             tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
             self.logger.info("🛠️ Rebuilt document.xml.rels with detected relationships.")
-
+    
     def _ensure_minimal_comments_xml(self, docx_unzipped_dir):
         from lxml import etree
         import os
@@ -697,6 +698,40 @@ class JBGDocumentEditor:
                     root.remove(rel)
                     self.logger.info(f"🧹 Removed ghost relationship: {target}")
             tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="utf-8")
+
+    def _add_extended_comment_support(self, docx_unzipped_dir):
+        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
+        ct_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
+
+        ns_rel = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+        ns_ct = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
+
+        # Add relationships
+        rel_tree = etree.parse(rels_path)
+        rel_root = rel_tree.getroot()
+        for target, rtype in [
+            ("commentsExtended.xml", "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"),
+            ("commentsIds.xml", "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds")
+        ]:
+            etree.SubElement(rel_root, "Relationship", {
+                "Id": f"rId{uuid.uuid4().hex[:8]}",
+                "Type": rtype,
+                "Target": target
+            })
+        rel_tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+
+        # Add content types
+        ct_tree = etree.parse(ct_path)
+        ct_root = ct_tree.getroot()
+        for part_name, content_type in [
+            ("/word/commentsExtended.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"),
+            ("/word/commentsIds.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml")
+        ]:
+            etree.SubElement(ct_root, f"{{{ns_ct['ct']}}}Override", {
+                "PartName": part_name,
+                "ContentType": content_type
+            })
+        ct_tree.write(ct_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
     
     @staticmethod

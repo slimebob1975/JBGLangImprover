@@ -3,7 +3,7 @@ import sys
 from app.src.JBGDocumentStructureExtractor import DocumentStructureExtractor
 from app.src.JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
 from app.src.JBGDocumentEditor import JBGDocumentEditor
-from app.src.JBGDocxRepairer import WordRepairer
+from app.src.JBGDocxRepairer import AutoDocxRepairer
 
 import logging
 
@@ -45,8 +45,7 @@ class JBGLanguageImprover:
             try:
                 repair_path = output_path
                 self.logger.info(f"🔧 Try to repair the Word document if it is partly corrupted...")
-                repairer = WordRepairer(logger=self.logger)
-                repair_path = repairer.repair(repair_path)
+                repair_path = AutoDocxRepairer(logger=self.logger).repair(repair_path)
             except Exception as ex:
                 self.logger.info(f"❌ Failed to repair the Word document. Reason: {str(ex)}")
             else:
