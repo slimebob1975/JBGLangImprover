@@ -5,6 +5,8 @@ import argparse
 import zipfile
 from tempfile import mkdtemp
 from lxml import etree
+
+NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     
 class AutoDocxRepairer:
     def __init__(self, logger=None):
@@ -123,22 +125,83 @@ class WordRepairer:
         return repaired_files
     
 class DocxXmlRepairer:
+    
     def __init__(self, logger=None):
         self.logger = logger or print
 
     def repair(self, docx_path, output_path=None):
+        
         try:
+            tmp_dir = mkdtemp()
             with zipfile.ZipFile(docx_path, "r") as zin:
-                zin.testzip()  # Check for basic corruption
-                if any("word/comments.xml" in f for f in zin.namelist()):
-                    self.logger.info("✅ comments.xml exists.")
-                    return docx_path  # Nothing to fix
-                else:
-                    self.logger.warning("⚠️ comments.xml missing — creating minimal version.")
-                    return self._add_minimal_comments(docx_path, output_path)
+                zin.extractall(tmp_dir)
+
+            comments_path = os.path.join(tmp_dir, "word", "comments.xml")
+            if not os.path.exists(comments_path):
+                self.logger.warning("⚠️ comments.xml missing — creating minimal version.")
+                self._add_minimal_comments_to_dir(tmp_dir)
+
+            else:
+                try:
+                    etree.parse(comments_path)
+                    self.logger.info("✅ comments.xml is valid.")
+                except etree.XMLSyntaxError:
+                    self.logger.warning("⚠️ comments.xml is malformed — repairing.")
+                    self._repair_comments_in_dir(tmp_dir)
+
+            self._add_comment_infra_files(tmp_dir)
+            self._ensure_extended_comment_relationships(tmp_dir)
+            self._ensure_content_type_overrides(tmp_dir)
+            self._remove_orphan_comment_refs(tmp_dir)
+            self._ensure_comment_relationship(tmp_dir)
+
+            # Final output path
+            if not output_path:
+                output_path = docx_path.replace(".docx", "_repaired.docx")
+
+            with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
+                for root_dir, _, files in os.walk(tmp_dir):
+                    for file in files:
+                        full_path = os.path.join(root_dir, file)
+                        archive_name = os.path.relpath(full_path, tmp_dir)
+                        zout.write(full_path, archive_name)
+
+            self.logger.info(f"🔧 Repaired and saved as: {output_path}")
+            return output_path
 
         except zipfile.BadZipFile:
             raise Exception("❌ .docx file is not a valid ZIP archive — unrecoverable.")
+        
+    # Empty placeholder for now -- need to add functionality here
+    def _repair_comments(self, docx_path, output_path=None):
+        if not output_path:
+            return docx_path
+        else:
+            return output_path
+        
+    def _remove_orphan_comment_refs(self, tmp_dir):
+        
+        doc_path = os.path.join(tmp_dir, "word", "document.xml")
+        comments_path = os.path.join(tmp_dir, "word", "comments.xml")
+        parser = etree.XMLParser(remove_blank_text=True)
+
+        try:
+            doc_tree = etree.parse(doc_path, parser)
+            comment_elems = etree.parse(comments_path).xpath("//w:comment", namespaces=NSMAP)
+            valid_ids = {c.get(f"{{{NSMAP['w']}}}id") for c in comment_elems}
+
+            for ref in doc_tree.xpath("//w:commentReference", namespaces=NSMAP):
+                if ref.get(f"{{{NSMAP['w']}}}id") not in valid_ids:
+                    parent = ref.getparent()
+                    parent.remove(ref)
+                    self.logger.info(f"🧽 Removed orphan commentReference: ID={ref.get('w:id')}")
+
+            doc_tree.write(doc_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to sanitize comment references: {e}")
+        else:
+            self.logger.info(f" ✅ No orphan commentReference:s to remove.")
 
     def _add_minimal_comments(self, path, output_path=None):
        
@@ -163,9 +226,140 @@ class DocxXmlRepairer:
                     archive_name = os.path.relpath(full_path, tmp_dir)
                     zout.write(full_path, archive_name)
 
-        self.logger(f"🔧 Repaired and saved as: {output_path}")
+        self.logger.info(f"🔧 Repaired and saved as: {output_path}")
+        
         return output_path
     
+    def _ensure_comment_relationship(self, tmp_dir):
+     
+        rels_path = os.path.join(tmp_dir, "word", "_rels", "document.xml.rels")
+        if not os.path.exists(rels_path):
+            return  # Let Word fix this later
+
+        tree = etree.parse(rels_path)
+        root = tree.getroot()
+        nsmap = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+
+        if not any("comments.xml" in r.get("Target", "") for r in root.findall("rel:Relationship", namespaces=nsmap)):
+            etree.SubElement(root, "Relationship", {
+                "Id": "rIdComments",
+                "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+                "Target": "comments.xml"
+            })
+            tree.write(rels_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info("🔗 Added missing relationship to comments.xml")
+        else:
+            self.logger.info(f" ✅ Seems like all comments has their proper relationsships.")        
+            
+    def _add_comment_infra_files(self, tmp_dir):
+
+        word_dir = os.path.join(tmp_dir, "word")
+        os.makedirs(word_dir, exist_ok=True)
+
+        def safe_write(filename, content_func):
+            path = os.path.join(word_dir, filename)
+            if os.path.exists(path):
+                self.logger.info(f"📄 {filename} already exists — skipped.")
+                return
+            tree = content_func()
+            tree.write(path, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+            self.logger.info(f"🧾 Created {filename}")
+
+        # 1. commentsExtended.xml
+        def comments_ex_tree():
+            root = etree.Element("{http://schemas.microsoft.com/office/word/2010/wordml}commentsEx")
+            return etree.ElementTree(root)
+
+        # 2. commentsIds.xml
+        def comments_ids_tree():
+            ns = "http://schemas.microsoft.com/office/word/2016/wordml"
+            root = etree.Element(f"{{{ns}}}commentsIds")
+            etree.SubElement(root, f"{{{ns}}}commentId", {
+                f"{{{ns}}}paraId": "00000000",
+                f"{{{ns}}}durableId": "{00000000-0000-0000-0000-000000000000}"
+            })
+            return etree.ElementTree(root)
+
+
+        # 3. people.xml
+        def people_tree():
+            root = etree.Element("{http://schemas.microsoft.com/office/2006/metadata/customXml}personList")
+            return etree.ElementTree(root)
+
+        # Apply all safely
+        safe_write("commentsExtended.xml", comments_ex_tree)
+        safe_write("commentsIds.xml", comments_ids_tree)
+        safe_write("people.xml", people_tree)
+        
+    def _ensure_extended_comment_relationships(self, tmp_dir):
+
+        rels_path = os.path.join(tmp_dir, "word", "_rels", "document.xml.rels")
+        if not os.path.exists(rels_path):
+            self.logger.warning("⚠️ document.xml.rels missing — skipping relationship injection.")
+            return
+
+        tree = etree.parse(rels_path)
+        root = tree.getroot()
+        nsmap = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+
+        existing_targets = {
+            rel.attrib.get("Target")
+            for rel in root.findall("rel:Relationship", namespaces=nsmap)
+        }
+
+        required = [
+            ("commentsExtended.xml", "http://schemas.microsoft.com/office/2011/relationships/commentsExtended", "rIdExt"),
+            ("commentsIds.xml", "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds", "rIdIds"),
+            ("people.xml", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/person", "rIdPeople"),
+        ]
+
+        for target, rtype, rid in required:
+            if target in existing_targets:
+                self.logger.info(f"🔗 Relationship for {target} already exists — skipped.")
+            else:
+                etree.SubElement(root, "Relationship", {
+                    "Id": rid,
+                    "Type": rtype,
+                    "Target": target
+                })
+                self.logger.info(f"🔗 Added relationship for: {target}")
+
+        tree.write(rels_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+    def _ensure_content_type_overrides(self, tmp_dir):
+
+        ct_path = os.path.join(tmp_dir, "[Content_Types].xml")
+        if not os.path.exists(ct_path):
+            self.logger.warning("⚠️ [Content_Types].xml missing — skipping override injection.")
+            return
+
+        tree = etree.parse(ct_path)
+        root = tree.getroot()
+        ns_ct = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+        existing_parts = {
+            override.attrib.get("PartName")
+            for override in root.findall(f".//{{{ns_ct}}}Override")
+        }
+
+        overrides = [
+            ("/word/commentsExtended.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"),
+            ("/word/commentsIds.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml"),
+            ("/word/people.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.people+xml"),
+        ]
+
+        for part_name, content_type in overrides:
+            if part_name in existing_parts:
+                self.logger.info(f"🧾 Content override for {part_name} already exists — skipped.")
+            else:
+                etree.SubElement(root, f"{{{ns_ct}}}Override", {
+                    "PartName": part_name,
+                    "ContentType": content_type
+                })
+                self.logger.info(f"🧾 Added content type override: {part_name}")
+
+        tree.write(ct_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
 def main():
     parser = argparse.ArgumentParser(description="Repair .docx files using Word automation (Windows only).")
     parser.add_argument("input", help="Path to .docx file or folder containing .docx files")
