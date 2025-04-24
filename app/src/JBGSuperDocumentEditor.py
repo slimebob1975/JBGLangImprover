@@ -2,7 +2,7 @@ import os
 import shutil
 import uuid
 import docx
-from docx.shared import RGBColor
+from copy import deepcopy
 from app.src.JBGDocumentEditor import JBGDocumentEditor
 from app.src.JBGDocxRepairer import AutoDocxRepairer
 from lxml import etree
@@ -106,7 +106,7 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         self.doc = docx.Document(repaired_path)
         self.final_path = repaired_path
         return self.doc
-
+    
     def _convert_markup_to_tracked(self, input_docx_path: str) -> str:
         """
         Full rewrite of tracked conversion:
