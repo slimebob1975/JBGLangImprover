@@ -9,12 +9,13 @@ from datetime import datetime
 import time
 from app.src.JBGLanguageImprover import JBGLanguageImprover
 
-KEEP_FILES_HOURS = 24
+KEEP_FILES_HOURS = 1
 
 def clean_old_uploads(directory, logger, max_age_hours=KEEP_FILES_HOURS):
     now = time.time()
     max_age_seconds = max_age_hours * 3600
 
+    num_old_files_deleted = 0
     for filename in os.listdir(directory):
         filepath = os.path.join(directory, filename)
         if os.path.isfile(filepath):
@@ -23,8 +24,12 @@ def clean_old_uploads(directory, logger, max_age_hours=KEEP_FILES_HOURS):
                 try:
                     os.remove(filepath)
                     logger.info(f"🧹 Deleted old file: {filename}")
+                    num_old_files_deleted +=1
                 except Exception as e:
                     logger.warning(f"⚠️ Could not delete {filename}: {e}")
+    
+    if num_old_files_deleted > 0:
+        logger.info(f"🧼 Upload cleanup completed: {num_old_files_deleted} files deleted.")
 
 def setup_run_logger(log_path):
     
@@ -68,7 +73,7 @@ def home(request: Request):
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
-    custom_prompt: str = Form(""), temperature: float = Form(0.7), include_comments: bool = Form(True), \
+    custom_prompt: str = Form(""), temperature: float = Form(0.7), include_motivations: bool = Form(True), \
     docx_mode: str = Form("simple")):
     
     # Create fresh timestamp for each request
@@ -87,7 +92,7 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
     logger.info(f"📥 Received file: {file.filename}")
     logging.info(f"Saving to: {input_path}")
     logger.info(f"🌡️ Temperature: {temperature}")
-    logger.info(f"💬 Include comments: {include_comments}")
+    logger.info(f"💬 Include motivations: {include_motivations}")
     logger.info(f"📝 DOCX markup mode: {docx_mode}")
     
     # Load base prompt policy from file
@@ -106,7 +111,7 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
         model=model,
         prompt_policy=full_prompt,
         temperature=temperature,
-        include_comments=include_comments,
+        include_motivations=include_motivations,
         docx_mode=docx_mode,
         logger=logger
     )

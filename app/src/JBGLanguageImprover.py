@@ -9,13 +9,13 @@ import logging
 
 class JBGLanguageImprover:
         
-    def __init__(self, input_path, api_key, model, prompt_policy, temperature, include_comments, docx_mode, logger):
+    def __init__(self, input_path, api_key, model, prompt_policy, temperature, include_motivations, docx_mode, logger):
         self.input_path = input_path
         self.api_key = api_key
         self.model = model
         self.prompt_policy = prompt_policy
         self.temperature = temperature
-        self.include_comments = include_comments
+        self.include_motivations = include_motivations
         self.docx_mode = docx_mode
         self.logger = logger
         self.structure_json = input_path.replace(os.path.splitext(input_path)[1], "_structure.json")
@@ -35,7 +35,7 @@ class JBGLanguageImprover:
         self.suggestions_json = ai.save_as_json()
 
         self.logger.info("✏️ Applying suggestions to document...")
-        editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_comments, self.docx_mode, self.logger)
+        editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.docx_mode, self.logger)
         editor.apply_changes()
         output_path = editor.save_edited_document()
 

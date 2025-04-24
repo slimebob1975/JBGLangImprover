@@ -13,13 +13,13 @@
         <h1>JBG klarspråkning</h1>
         <h3><em>Obs! Endast .docx- eller .pdf-filer</em></h3>
         <form id="uploadForm">
-            <label for="documentFile"><strong>1. Ladda upp ett dokument:</strong></label><br>
+            <label for="documentFile"><strong>Välj dokument:</strong></label><br>
             <input type="file" id="documentFile" name="file" accept=".pdf,.docx" required><br><br>
           
-            <label for="apiKey"><strong>2. Ange din OpenAI API-nyckel:</strong></label><br>
+            <label for="apiKey"><strong>OpenAI API-nyckel:</strong></label><br>
             <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required><br><br>
           
-            <label for="model"><strong>3. Välj modell:</strong></label><br>
+            <label for="model"><strong>Välj modell:</strong></label><br>
             <select id="model" name="model">
                 <option value="gpt-4o" selected>gpt-4o - Ny snabb & billig GPT-4-modell</option>
                 <option value="gpt-4">gpt-4 – Högsta noggrannhet, långsammare, dyrare</option>
@@ -27,12 +27,12 @@
                 <option value="gpt-3.5-turbo">gpt-3.5-turbo – Snabbast och billigast, men mindre exakt</option>
             </select><br><br>
           
-            <label for="customPrompt"><strong>4. Extra promptinstruktioner:</strong></label><br>
+            <label for="customPrompt"><strong>Lägg till extra promptinstruktioner:</strong></label><br>
             <textarea id="customPrompt" name="customPrompt" rows="4" placeholder="Tillägg till standardprompten..."></textarea><br><br>
 
             <!-- Temperature Checkbox and Slider -->
             <div>
-                <label for="temperature"><strong>5. Kreativitetsnivå (0 = låg, 1 = hög):</strong></label>
+                <label for="temperature"><strong>Ange kreativitetsnivå (0 = låg, 1 = hög):</strong></label>
                 <div class="form-inline">
                     <input type="range" id="temperature" name="temperature" min="0" max="1" step="0.01" value="0.7">
                     <span id="tempDisplay">0.7</span>
@@ -40,13 +40,13 @@
             </div>
 
             <div class="form-inline">
-                <label for="includeComments"><strong>6. Motivera dina förändringsförslag</strong></label>
-                <input type="checkbox" id="includeComments" name="includeComments" checked>
+                <label for="includeMotivations"><strong>Motivera förändringsförslag:</strong></label>
+                <input type="checkbox" id="includeMotivations" name="includeMotivations" checked>
             </div>
 
             <!-- DOCX Markup Mode -->
             <div>
-                <label><strong>7. För .docx-filer visas förändringsförslag med:</strong></label>
+                <label><strong>Visa förändringsförslag i .docx-filer med:</strong></label>
                 <div class="form-inline">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
                     <label for="simpleMarking">Enkel färgmarkering</label>

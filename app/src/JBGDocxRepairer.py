@@ -5,6 +5,7 @@ import argparse
 import zipfile
 from tempfile import mkdtemp
 from lxml import etree
+import shutil
 
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     
@@ -135,6 +136,7 @@ class DocxXmlRepairer:
             tmp_dir = mkdtemp()
             with zipfile.ZipFile(docx_path, "r") as zin:
                 zin.extractall(tmp_dir)
+            zin.close()
 
             comments_path = os.path.join(tmp_dir, "word", "comments.xml")
             if not os.path.exists(comments_path):
@@ -156,17 +158,28 @@ class DocxXmlRepairer:
             self._ensure_comment_relationship(tmp_dir)
 
             # Final output path
-            if not output_path:
+            if not output_path or os.path.abspath(output_path) == os.path.abspath(docx_path):
                 output_path = docx_path.replace(".docx", "_repaired.docx")
 
-            with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
-                for root_dir, _, files in os.walk(tmp_dir):
-                    for file in files:
-                        full_path = os.path.join(root_dir, file)
-                        archive_name = os.path.relpath(full_path, tmp_dir)
-                        zout.write(full_path, archive_name)
+            try:
+               with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
+                    for root_dir, _, files in os.walk(tmp_dir):
+                        for file in files:
+                            full_path = os.path.join(root_dir, file)
+                            archive_name = os.path.relpath(full_path, tmp_dir)
+                            zout.write(full_path, archive_name)
+            except PermissionError as pe:
+                self.logger.error(f"❌ Permission denied during zipping: {pe}")
+                raise
+            else:
+                try:
+                    shutil.rmtree(tmp_dir)
+                    self.logger.info(f"🧹 Cleaned up temporary directory: {tmp_dir}")
+                except Exception as cleanup_err:
+                    self.logger.warning(f"⚠️ Failed to clean temp dir {tmp_dir}: {cleanup_err}")
 
             self.logger.info(f"🔧 Repaired and saved as: {output_path}")
+            
             return output_path
 
         except zipfile.BadZipFile:
@@ -203,11 +216,11 @@ class DocxXmlRepairer:
         else:
             self.logger.info(f" ✅ No orphan commentReference:s to remove.")
 
-    def _add_minimal_comments(self, path, output_path=None):
-       
-        tmp_dir = mkdtemp()
-        with zipfile.ZipFile(path, "r") as zin:
-            zin.extractall(tmp_dir)
+    def _add_minimal_comments_to_dir(self, tmp_dir):
+        """
+        Creates a minimal comments.xml in the given already-extracted tmp_dir.
+        This version avoids re-extracting the docx file and re-zipping here.
+        """
 
         comments_path = os.path.join(tmp_dir, "word", "comments.xml")
         os.makedirs(os.path.dirname(comments_path), exist_ok=True)
@@ -216,19 +229,7 @@ class DocxXmlRepairer:
         root = etree.Element(f"{{{nsmap['w']}}}comments", nsmap=nsmap)
         etree.ElementTree(root).write(comments_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
 
-        if not output_path:
-            output_path = path.replace(".docx", "_repaired.docx")
-
-        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
-            for root_dir, _, files in os.walk(tmp_dir):
-                for file in files:
-                    full_path = os.path.join(root_dir, file)
-                    archive_name = os.path.relpath(full_path, tmp_dir)
-                    zout.write(full_path, archive_name)
-
-        self.logger.info(f"🔧 Repaired and saved as: {output_path}")
-        
-        return output_path
+        self.logger.info(f"🧾 Created minimal comments.xml at: {comments_path}")
     
     def _ensure_comment_relationship(self, tmp_dir):
      

@@ -21,7 +21,7 @@ NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 class JBGDocumentEditor:
     
-    def __init__(self, filepath, changes_path, include_comments, docx_mode, logger):
+    def __init__(self, filepath, changes_path, include_motivations, docx_mode, logger):
         """
         :param filepath: Path to the input document (.docx or .pdf)
         :param changes_path: Path to the suggested changes JSON file
@@ -29,7 +29,7 @@ class JBGDocumentEditor:
         self.filepath = filepath
         self.changes = self._get_changes_from_json(changes_path)  
         self.logger = logger
-        self.include_comments = include_comments
+        self.include_motivations = include_motivations
         self.docx_mode = docx_mode  # "simple" or "tracked"
         self.ext = os.path.splitext(filepath)[1].lower()
         self.edited_document = None
@@ -159,7 +159,7 @@ class JBGDocumentEditor:
                         run.font.color.rgb = RGBColor(0, 128, 0)
 
                     # Attach comment if available
-                    if self.include_comments:
+                    if self.include_motivations:
                         for change in applicable_changes:
                             if change["new"] == val and "motivation" in change:
                                 run.add_comment(
@@ -362,7 +362,7 @@ class JBGDocumentEditor:
         parent.insert(insertion_index, wrapper)
 
         # Handle comment (only for insertions)
-        if comment_ref is not None:
+        if comment_ref is not None and self.include_motivations:
             comment_ref_run = etree.Element(f"{{{self.nsmap['w']}}}r")
             comment_ref_run.append(deepcopy(comment_ref))
             parent.insert(insertion_index + 1, comment_ref_run)
@@ -468,15 +468,19 @@ class JBGDocumentEditor:
             r for r in rels
             if r.attrib.get("Type") == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
         ]
-        if not comment_rels:
-            raise Exception("❌ Missing relationship to comments.xml in document.xml.rels")
+        if self.include_motivations:
+            if not comment_rels:
+                raise Exception("❌ Missing relationship to comments.xml in document.xml.rels")
+        else:
+            self.logger.info("📝 Skipping comments.xml relationship validation (motivations not included).")
 
         # 5. Check [Content_Types].xml
         content_types_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
         ct_tree = ET.parse(content_types_path)
         overrides = ct_tree.findall(".//ct:Override", namespaces=ns)
-        if not any(o.attrib.get("PartName") == "/word/comments.xml" for o in overrides):
-            raise Exception("❌ Missing override for comments.xml in [Content_Types].xml")
+        if self.include_motivations:
+            if not any(o.attrib.get("PartName") == "/word/comments.xml" for o in overrides):
+                raise Exception("❌ Missing override for comments.xml in [Content_Types].xml")
 
         if DEBUG:
             unknown_tags = []
@@ -656,7 +660,7 @@ class JBGDocumentEditor:
 
     def _ensure_minimal_comments_structure(self, docx_unzipped_dir):
         """
-        Ensures that the comments.xml exists and is minimal (even if include_comments=False),
+        Ensures that the comments.xml exists and is minimal (even if include_motivations=False),
         and purges ghost references to removed or unused comment parts.
         """
         import os
@@ -782,7 +786,7 @@ class JBGDocumentEditor:
                         for rect in rects:
                             highlight = page.add_highlight_annot(rect)
                             if new:
-                                if self.include_comments:
+                                if self.include_motivations:
                                     highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
                                 else:
                                     highlight.set_info(content=f"{SUGGESTION}: {new}")
@@ -799,7 +803,7 @@ class JBGDocumentEditor:
                             for rect in rects:
                                 highlight = page.add_highlight_annot(rect)
                                 if new:
-                                    if self.include_comments:
+                                    if self.include_motivations:
                                         highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
                                     else:
                                         highlight.set_info(content=f"{SUGGESTION}: {new}")
@@ -812,7 +816,7 @@ class JBGDocumentEditor:
                 for rect in rects:
                     highlight = page.add_highlight_annot(rect)
                     if new:
-                        if self.include_comments:
+                        if self.include_motivations:
                             highlight.set_info(content=f"{SUGGESTION}: {new} \n\n{MOTIVATION}: {motivation}")
                         else:
                             highlight.set_info(content=f"{SUGGESTION}: {new}")

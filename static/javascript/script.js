@@ -25,7 +25,7 @@ const model = document.getElementById("model").value;
 const customPrompt = document.getElementById("customPrompt").value.trim();
 
 const temperature = parseFloat(document.getElementById("temperature").value);
-const includeComments = document.getElementById("includeComments").checked;
+const includeMotivations = document.getElementById("includeMotivations").checked;
 const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
 
 const status = document.getElementById("status");
@@ -47,7 +47,7 @@ formData.append("api_key", apiKey);
 formData.append("model", model);
 formData.append("custom_prompt", customPrompt);
 formData.append("temperature", temperature);
-formData.append("include_comments", includeComments);
+formData.append("include_motivations", includeMotivations);
 formData.append("docx_mode", docxMode);
 
 // Save the API key for future visits
