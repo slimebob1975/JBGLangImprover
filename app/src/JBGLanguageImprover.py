@@ -2,6 +2,7 @@ import os
 import sys
 from app.src.JBGDocumentStructureExtractor import DocumentStructureExtractor
 from app.src.JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
+from app.src.JBGSuperDocumentEditor import JBGSuperDocumentEditor
 from app.src.JBGDocumentEditor import JBGDocumentEditor
 from app.src.JBGDocxRepairer import AutoDocxRepairer
 
@@ -35,21 +36,28 @@ class JBGLanguageImprover:
         self.suggestions_json = ai.save_as_json()
 
         self.logger.info("✏️ Applying suggestions to document...")
-        editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.docx_mode, self.logger)
-        editor.apply_changes()
-        output_path = editor.save_edited_document()
+        try:
+            editor = JBGSuperDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.docx_mode, self.logger)
+            editor.apply_changes()
+            output_path = editor.save_edited_document()
+        except Exception as ex:
+            self.logger.warning(f"⚠️ JBGSuperDocumentEditor failed: {str(ex)}. Using fallback implementation.")
+            editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.docx_mode, self.logger)
+            editor.apply_changes()
+            output_path = editor.save_edited_document()
+            
+            # Attempt repairs (included in the SuperEditor above)
+            if editor.ext == ".docx":
+                try:
+                    repair_path = output_path
+                    self.logger.info(f"🔧 Try to repair the Word document if it is partly corrupted...")
+                    repair_path = AutoDocxRepairer(logger=self.logger).repair(repair_path)
+                except Exception as ex:
+                    self.logger.info(f"❌ Failed to repair the Word document. Reason: {str(ex)}")
+                else:
+                    output_path = repair_path
 
         self.logger.info(f"✅ Final improved document saved to: {output_path}")
-        
-        if editor.ext == ".docx":
-            try:
-                repair_path = output_path
-                self.logger.info(f"🔧 Try to repair the Word document if it is partly corrupted...")
-                repair_path = AutoDocxRepairer(logger=self.logger).repair(repair_path)
-            except Exception as ex:
-                self.logger.info(f"❌ Failed to repair the Word document. Reason: {str(ex)}")
-            else:
-                output_path = repair_path
             
         return output_path
 

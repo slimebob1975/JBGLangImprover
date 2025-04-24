@@ -9,11 +9,12 @@ from datetime import datetime
 import time
 from app.src.JBGLanguageImprover import JBGLanguageImprover
 
+KEEP_FILES_DAYS = 0
 KEEP_FILES_HOURS = 1
 
-def clean_old_uploads(directory, logger, max_age_hours=KEEP_FILES_HOURS):
+def clean_old_files(directory, logger, max_age_days=KEEP_FILES_DAYS, max_age_hours=KEEP_FILES_HOURS):
     now = time.time()
-    max_age_seconds = max_age_hours * 3600
+    max_age_seconds = (max_age_days * 24  + max_age_hours) * 3600  
 
     num_old_files_deleted = 0
     for filename in os.listdir(directory):
@@ -88,7 +89,8 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
         
     # Log upload and saving path
     logger = setup_run_logger(log_path)
-    clean_old_uploads(UPLOAD_DIR, logger)
+    clean_old_files(UPLOAD_DIR, logger, max_age_days=0, max_age_hours=1)
+    clean_old_files(LOG_DIR, logger, max_age_days=7, max_age_hours=0)
     logger.info(f"📥 Received file: {file.filename}")
     logging.info(f"Saving to: {input_path}")
     logger.info(f"🌡️ Temperature: {temperature}")
