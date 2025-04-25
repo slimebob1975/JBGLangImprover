@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 DEBUG = True
+REPAIR_ON = True
+REQUIRED_STYLES = {"Normal", "DefaultParagraphFont", "TableNormal", "CommentText", "InsertedText", "DeletedText"}
 
 class JBGSuperDocumentEditor:
     def __init__(self, filepath, changes_path, include_motivations, docx_mode, logger):
@@ -33,6 +35,11 @@ class JBGSuperDocumentEditor:
                 self.editor = DocxSimpleMarkupEditor(filepath, changes_path, include_motivations, logger)
         else:
             raise ValueError("Unsupported file format")
+        
+        self.nsmap = {
+            'w': "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+            'w14': "http://schemas.microsoft.com/office/word/2010/wordml"
+        }
 
     def apply_changes(self):
         return self.editor.apply_changes()
@@ -114,9 +121,21 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                 self.logger.warning(f"  {e}")
         
         # Try to repair
-        repairer = AutoDocxRepairer(logger=self.logger)
-        repaired_path = repairer.repair(final_path)
-
+        if REPAIR_ON:
+            if DEBUG:
+                with zipfile.ZipFile(final_path, 'r') as z:
+                    for f in z.namelist():
+                        if f.startswith('customXml'):
+                            print("✅ Found in tracked docx:", f)
+            repairer = AutoDocxRepairer(logger=self.logger)
+            repaired_path = repairer.repair(final_path)
+            if DEBUG:
+                with zipfile.ZipFile(repaired_path, 'r') as z:
+                    for f in z.namelist():
+                        if f.startswith('customXml'):
+                            print("✅ Still present after repair:", f)
+        else:
+            repaired_path = final_path
         self.doc = docx.Document(repaired_path)
         self.final_path = repaired_path
         return self.doc
@@ -142,6 +161,9 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
             
         # Repair the interim package by merging missing files, if needed
         self._merge_missing_parts(self.filepath, temp_dir)
+        
+        # Ensure there relationships
+        self._ensure_theme_relationship(temp_dir)
 
         # Start manipulating the XML structure
         doc_path = os.path.join(temp_dir, "word", "document.xml")
@@ -212,6 +234,8 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         for para in root.xpath("//w:p", namespaces=nsmap):
             para.set("{http://schemas.microsoft.com/office/word/2010/wordml}paraId", uuid4().hex[:8])
             para.set("{http://schemas.microsoft.com/office/word/2010/wordml}textId", uuid4().hex[:8])
+            para.set(f"{{{nsmap['w']}}}rsidR", "00A10B2F")
+            para.set(f"{{{nsmap['w']}}}rsidP", "00A10B2F")
         
         # Write back
         tree.write(doc_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
@@ -233,6 +257,13 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         for path in required_paths:
             if not os.path.exists(path):
                 self.logger.warning(f"⚠️ Required file missing: {path}")
+                
+        # Add final patches to critical XML structures
+        doc_path = os.path.join(temp_dir, "word", "document.xml")
+        settings_path = os.path.join(temp_dir, "word", "settings.xml")
+
+        self._final_patch_document_xml(doc_path)
+        self._final_patch_settings_xml(settings_path)
 
         # Repack
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -254,8 +285,141 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
     
     # Ensure original file structure is preserved by copying missing original files
     # on demand
-    def _merge_missing_parts(self, source_docx_path, temp_dir):
+    
+    def _ensure_theme_relationship(self, tmp_dir):
+        rels_path = os.path.join(tmp_dir, "word", "_rels", "document.xml.rels")
+        if not os.path.exists(rels_path):
+            return
 
+        nsmap = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+        tree = etree.parse(rels_path)
+        root = tree.getroot()
+
+        existing = [r.get("Type") for r in root.findall("rel:Relationship", namespaces=nsmap)]
+        theme_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+
+        if theme_type not in existing:
+            etree.SubElement(root, "Relationship", {
+                "Id": "rIdTheme",
+                "Type": theme_type,
+                "Target": "theme/theme1.xml"
+            })
+            tree.write(rels_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info("🔗 Added missing theme relationship to document.xml.rels")
+    
+    # Helper to detect incomplete styles.xml
+    def _is_incomplete_styles_file(self, styles_path):
+        if not os.path.exists(styles_path) or os.stat(styles_path).st_size == 0:
+            return True
+        try:
+            tree = etree.parse(styles_path)
+            root = tree.getroot()
+            found_styles = {s.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}styleId")
+                            for s in root.xpath("//w:style", namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})}
+            missing = REQUIRED_STYLES - found_styles
+            return bool(missing)
+        except Exception:
+            return True
+
+    # Helper to patch incomplete styles.xml
+    def _patch_or_inject_styles(self, dst_path):
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        nsmap = {"w": ns}
+        tracked_styles = {
+            "InsertedText": "character",
+            "DeletedText": "character",
+            "CommentText": "character"
+        }
+
+        if not os.path.exists(dst_path):
+            # No styles at all? Then inject full minimal
+            self._inject_minimal_styles_xml(dst_path)
+            return
+
+        try:
+            parser = etree.XMLParser(remove_blank_text=True)
+            tree = etree.parse(dst_path, parser)
+            root = tree.getroot()
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to parse styles.xml: {e}")
+            self._inject_minimal_styles_xml(dst_path)
+            return
+
+        existing_ids = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
+        added = 0
+
+        for style_id, style_type in tracked_styles.items():
+            if style_id not in existing_ids:
+                style = etree.SubElement(root, f"{{{ns}}}style", {
+                    f"{{{ns}}}type": style_type,
+                    f"{{{ns}}}styleId": style_id
+                })
+                etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_id})
+                added += 1
+
+        if added > 0:
+            tree.write(dst_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info(f"➕ Patched {added} tracked-change styles into styles.xml")
+        else:
+            self.logger.info("✅ styles.xml already contains all tracked-change styles")
+
+    
+    # Helper to inject minimal styles.xml
+    def _inject_minimal_styles_xml(self, dst_path):
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.Element(f"{{{ns}}}styles", nsmap={"w": ns})
+
+        style_defs = [
+            ("Normal", "paragraph"),
+            ("DefaultParagraphFont", "character"),
+            ("TableNormal", "table"),
+            ("CommentText", "character"),
+            ("InsertedText", "character"),
+            ("DeletedText", "character")
+        ]
+
+        for style_id, style_type in style_defs:
+            style = etree.SubElement(root, f"{{{ns}}}style", {
+                f"{{{ns}}}type": style_type,
+                f"{{{ns}}}styleId": style_id
+            })
+            etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_id})
+
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        etree.ElementTree(root).write(dst_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+    # Helper to inject trackRevisions and rsids into settings.xml
+    def _fix_or_inject_settings_xml(self, dst_path):
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+        if not os.path.exists(dst_path):
+            root = etree.Element(f"{{{ns}}}settings", nsmap={"w": ns})
+        else:
+            tree = etree.parse(dst_path)
+            root = tree.getroot()
+
+        if root.find(f".//{{{ns}}}trackRevisions") is None:
+            track = etree.Element(f"{{{ns}}}trackRevisions")
+            root.insert(0, track)
+
+        if root.find(f".//{{{ns}}}rsids") is None:
+            rsids = etree.Element(f"{{{ns}}}rsids")
+            etree.SubElement(rsids, f"{{{ns}}}rsidRoot", {f"{{{ns}}}val": "00A10B2F"})
+            etree.SubElement(rsids, f"{{{ns}}}rsid", {f"{{{ns}}}val": "00A10B2F"})
+            root.insert(1, rsids)
+
+        if root.find(f".//{{{ns}}}compat") is None:
+            compat = etree.Element(f"{{{ns}}}compat")
+            etree.SubElement(compat, f"{{{ns}}}compatSetting", {
+                f"{{{ns}}}name": "compatibilityMode",
+                f"{{{ns}}}val": "15"
+            })
+            root.append(compat)
+
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        etree.ElementTree(root).write(dst_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+    def _merge_missing_parts(self, source_docx_path, temp_dir):
         backup_dir = mkdtemp()
         with zipfile.ZipFile(source_docx_path, 'r') as zin:
             zin.extractall(backup_dir)
@@ -265,38 +429,83 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
             "word/settings.xml",
             "word/fontTable.xml",
             "word/webSettings.xml",
-            "word/_rels/document.xml.rels"
+            "word/_rels/document.xml.rels",
+            "word/theme/theme1.xml"
         ]
 
         for rel_path in required_files:
             src = os.path.join(backup_dir, rel_path)
             dst = os.path.join(temp_dir, rel_path)
-            if not os.path.exists(dst):
-                if os.path.exists(src):
+
+            if "styles.xml" in rel_path:
+                if (not os.path.exists(dst)) or (os.path.exists(src) and self._is_incomplete_styles_file(dst)):
+                    self._patch_or_inject_styles(dst)
+                    self.logger.info(f"🧬 Injected minimal styles.xml with required tracked-change styles")
+                elif not os.path.exists(dst) and os.path.exists(src):
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.copyfile(src, dst)
-                    self.logger.info(f"📥 Recovered missing file from original: {rel_path}")
-                elif rel_path.endswith("styles.xml"):
-                    # Inject minimal styles.xml
-                    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-                    root = etree.Element(f"{{{ns}}}styles", nsmap={"w": ns})
+                    self.logger.info(f"📥 Recovered missing file: {rel_path}")
 
-                    def add_style(style_id, type_):
-                        style = etree.SubElement(root, f"{{{ns}}}style", attrib={
-                            f"{{{ns}}}type": type_,
-                            f"{{{ns}}}styleId": style_id
-                        })
-                        etree.SubElement(style, f"{{{ns}}}name", attrib={f"{{{ns}}}val": style_id})
+            elif "settings.xml" in rel_path:
+                if (not os.path.exists(dst)) or (os.path.exists(src)):
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copyfile(src, dst)
+                        self.logger.info(f"📥 Recovered missing file: {rel_path}")
+                    self._fix_or_inject_settings_xml(dst)
+                    self.logger.info(f"🛠 Ensured <w:trackRevisions> and <w:rsids> in settings.xml")
 
-                    for sid in ["Normal", "DefaultParagraphFont", "TableNormal", "CommentText", "InsertedText", "DeletedText"]:
-                        add_style(sid, "character" if "Text" in sid else "paragraph")
-
+            else:
+                if not os.path.exists(dst) and os.path.exists(src):
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    etree.ElementTree(root).write(dst, pretty_print=True, encoding="UTF-8", xml_declaration=True)
-                    self.logger.info(f"🧬 Injected minimal styles.xml with required tracked-change styles")
+                    shutil.copyfile(src, dst)
+                    self.logger.info(f"📥 Recovered missing file: {rel_path}")
+
+        # SPECIAL CASE: Copy whole customXml/ if it exists
+        src_customxml = os.path.join(backup_dir, "customXml")
+        dst_customxml = os.path.join(temp_dir, "customXml")
+        if os.path.exists(src_customxml):
+            shutil.copytree(src_customxml, dst_customxml, dirs_exist_ok=True)
+            self.logger.info("📂 Copied customXml/ folder from original.")
 
         shutil.rmtree(backup_dir)
-    
+
+    def _final_patch_document_xml(self, doc_path):
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(doc_path, parser)
+        root = tree.getroot()
+
+        for para in root.xpath('//w:body/w:p', namespaces=self.nsmap):
+            para.set('{http://schemas.microsoft.com/office/word/2010/wordml}paraId', uuid4().hex[:8])
+            para.set('{http://schemas.microsoft.com/office/word/2010/wordml}textId', uuid4().hex[:8])
+            para.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rsidR', uuid4().hex[:8])
+            para.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rsidP', uuid4().hex[:8])
+            para.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rsidRPr', uuid4().hex[:8])
+
+        tree.write(doc_path, xml_declaration=True, encoding='utf-8', pretty_print=True)
+
+    def _final_patch_settings_xml(self, settings_path):
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(settings_path, parser)
+        root = tree.getroot()
+        ns = self.nsmap['w']
+
+        # Add <w:compat> if missing
+        if root.find(f"w:compat", namespaces=self.nsmap) is None:
+            compat = etree.SubElement(root, f"{{{ns}}}compat")
+            cs = etree.SubElement(compat, f"{{{ns}}}compatSetting")
+            cs.set(f"{{{ns}}}name", "compatibilityMode")
+            cs.set(f"{{{ns}}}val", "15")
+
+        # Add <w:rsids> if missing
+        if root.find(f"w:rsids", namespaces=self.nsmap) is None:
+            rsids = etree.SubElement(root, f"{{{ns}}}rsids")
+            rsid_val = uuid4().hex[:8]
+            etree.SubElement(rsids, f"{{{ns}}}rsidRoot", val=rsid_val)
+            etree.SubElement(rsids, f"{{{ns}}}rsid", val=rsid_val)
+
+        tree.write(settings_path, xml_declaration=True, encoding='utf-8', pretty_print=True)
+
     def save(self, output_path=None):
         if not output_path:
             output_path = self.final_path

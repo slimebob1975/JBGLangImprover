@@ -94,6 +94,8 @@ class DocxInternalValidator:
                         etree.fromstring(data)
                     except etree.XMLSyntaxError as e:
                         self.errors.append(f"❌ {item} is broken: {e}")
+                        
+    
 
     def validate(self):
         self._extract_docx()
