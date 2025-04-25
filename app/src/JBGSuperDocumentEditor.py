@@ -35,11 +35,6 @@ class JBGSuperDocumentEditor:
                 self.editor = DocxSimpleMarkupEditor(filepath, changes_path, include_motivations, logger)
         else:
             raise ValueError("Unsupported file format")
-        
-        self.nsmap = {
-            'w': "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-            'w14': "http://schemas.microsoft.com/office/word/2010/wordml"
-        }
 
     def apply_changes(self):
         return self.editor.apply_changes()
@@ -68,6 +63,11 @@ class DocxDocumentEditor:
         self.include_motivations = include_motivations
         self.logger = logger
         self.temp_path = self._copy_to_temp()
+        
+        self.nsmap = {
+            'w': "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+            'w14': "http://schemas.microsoft.com/office/word/2010/wordml"
+        }
 
     def _copy_to_temp(self):
         basename = os.path.basename(self.filepath)
@@ -325,11 +325,14 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
     def _patch_or_inject_styles(self, dst_path):
         ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         nsmap = {"w": ns}
-        tracked_styles = {
-            "InsertedText": "character",
-            "DeletedText": "character",
-            "CommentText": "character"
-        }
+        required_styles = [
+            ("Normal", "paragraph"),
+            ("DefaultParagraphFont", "character"),
+            ("TableNormal", "table"),
+            ("CommentText", "character"),
+            ("InsertedText", "character"),
+            ("DeletedText", "character")
+        ]
 
         if not os.path.exists(dst_path):
             # No styles at all? Then inject full minimal
@@ -348,7 +351,7 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         existing_ids = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
         added = 0
 
-        for style_id, style_type in tracked_styles.items():
+        for style_id, style_type in required_styles:
             if style_id not in existing_ids:
                 style = etree.SubElement(root, f"{{{ns}}}style", {
                     f"{{{ns}}}type": style_type,
@@ -356,13 +359,14 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                 })
                 etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_id})
                 added += 1
+                if style_id == "Normal":
+                    etree.SubElement(style, f"{{{ns}}}default")
 
         if added > 0:
             tree.write(dst_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
             self.logger.info(f"➕ Patched {added} tracked-change styles into styles.xml")
         else:
             self.logger.info("✅ styles.xml already contains all tracked-change styles")
-
     
     # Helper to inject minimal styles.xml
     def _inject_minimal_styles_xml(self, dst_path):
@@ -387,6 +391,9 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
 
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         etree.ElementTree(root).write(dst_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+        
+        self.logger.info(f"🧬 Injected minimal styles.xml with required tracked-change styles")
+
 
     # Helper to inject trackRevisions and rsids into settings.xml
     def _fix_or_inject_settings_xml(self, dst_path):
@@ -438,9 +445,11 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
             dst = os.path.join(temp_dir, rel_path)
 
             if "styles.xml" in rel_path:
-                if (not os.path.exists(dst)) or (os.path.exists(src) and self._is_incomplete_styles_file(dst)):
+                if not os.path.exists(dst) and os.path.exists(src):
+                    shutil.copyfile(src, dst)
+                    self.logger.info(f"📥 Recovered missing file: {rel_path}")
+                elif os.path.exists(dst):
                     self._patch_or_inject_styles(dst)
-                    self.logger.info(f"🧬 Injected minimal styles.xml with required tracked-change styles")
                 elif not os.path.exists(dst) and os.path.exists(src):
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.copyfile(src, dst)
