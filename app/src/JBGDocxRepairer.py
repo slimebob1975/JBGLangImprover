@@ -6,6 +6,7 @@ import zipfile
 from tempfile import mkdtemp
 from lxml import etree
 import shutil
+from app.src.JBGDocxInternalValidator import DocxInternalValidator
 
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     
@@ -36,8 +37,18 @@ class AutoDocxRepairer:
         return DocxXmlRepairer(logger=self.logger)
 
     def repair(self, input_path, output_path=None):
-        return self.repairer.repair(input_path, output_path)
+        
+        if not output_path:
+            output_path = input_path
 
+        validator = DocxInternalValidator(output_path)
+        errors = validator.validate()
+        if errors:
+            self._log("⚠️ Validator flagged issues pre-repair:")
+            for e in errors:
+                self._log(f"  {e}")
+
+        return self.repairer.repair(input_path, output_path)
 
 class WordRepairer:
     def __init__(self, logger=None, enabled=True):
@@ -155,7 +166,21 @@ class DocxXmlRepairer:
             self._ensure_extended_comment_relationships(tmp_dir)
             self._ensure_content_type_overrides(tmp_dir)
             self._remove_orphan_comment_refs(tmp_dir)
+            self._ensure_all_comment_ids_exist(tmp_dir)
             self._ensure_comment_relationship(tmp_dir)
+            self._enable_track_revisions(tmp_dir)
+            self._ensure_rsid_definitions(tmp_dir)
+            
+            # Ensure all required files exist 
+            required_paths = [
+                os.path.join(tmp_dir, "word", "document.xml"),
+                os.path.join(tmp_dir, "word", "comments.xml"),
+                os.path.join(tmp_dir, "word", "settings.xml"),
+                os.path.join(tmp_dir, "word", "_rels", "document.xml.rels")
+            ]
+            for path in required_paths:
+                if not os.path.exists(path):
+                    self.logger.warning(f"⚠️ Required file missing: {path}")
 
             # Final output path
             if not output_path or os.path.abspath(output_path) == os.path.abspath(docx_path):
@@ -184,7 +209,7 @@ class DocxXmlRepairer:
 
         except zipfile.BadZipFile:
             raise Exception("❌ .docx file is not a valid ZIP archive — unrecoverable.")
-        
+    
     # Empty placeholder for now -- need to add functionality here
     def _repair_comments(self, docx_path, output_path=None):
         if not output_path:
@@ -240,6 +265,18 @@ class DocxXmlRepairer:
         tree = etree.parse(rels_path)
         root = tree.getroot()
         nsmap = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+        
+        # Ensure only one relationship per type
+        existing = [r.get("Target") for r in root.findall("rel:Relationship", namespaces=nsmap)]
+        if "comments.xml" not in existing:
+            etree.SubElement(root, "Relationship", {
+                "Id": "rIdComments",
+                "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+                "Target": "comments.xml"
+            })
+            tree.write(rels_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info("🔗 Added relationship to comments.xml")
+
 
         if not any("comments.xml" in r.get("Target", "") for r in root.findall("rel:Relationship", namespaces=nsmap)):
             etree.SubElement(root, "Relationship", {
@@ -359,6 +396,78 @@ class DocxXmlRepairer:
                 self.logger.info(f"🧾 Added content type override: {part_name}")
 
         tree.write(ct_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+        
+    def _enable_track_revisions(self, tmp_dir):
+        settings_path = os.path.join(tmp_dir, "word", "settings.xml")
+        if not os.path.exists(settings_path):
+            self.logger.warning("⚠️ settings.xml not found — skipping trackRevisions.")
+            return
+
+        tree = etree.parse(settings_path)
+        root = tree.getroot()
+        nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+        if root.find("w:trackRevisions", namespaces=nsmap) is None:
+            track = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}trackRevisions")
+            root.insert(0, track)
+            tree.write(settings_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info("📝 Added <w:trackRevisions> to settings.xml.")
+
+    def _ensure_all_comment_ids_exist(self, tmp_dir):
+        doc_path = os.path.join(tmp_dir, "word", "document.xml")
+        comments_path = os.path.join(tmp_dir, "word", "comments.xml")
+        if not os.path.exists(comments_path):
+            return
+
+        parser = etree.XMLParser(remove_blank_text=True)
+        doc_tree = etree.parse(doc_path, parser)
+        comments_tree = etree.parse(comments_path, parser)
+        comments_root = comments_tree.getroot()
+
+        existing_ids = {
+            c.get(f"{{{NSMAP['w']}}}id") for c in comments_root.findall("w:comment", namespaces=NSMAP)
+        }
+
+        for ref in doc_tree.xpath("//w:commentReference", namespaces=NSMAP):
+            cid = ref.get(f"{{{NSMAP['w']}}}id")
+            if cid not in existing_ids:
+                dummy = etree.Element(f"{{{NSMAP['w']}}}comment", nsmap=NSMAP)
+                dummy.set(f"{{{NSMAP['w']}}}id", cid)
+                dummy.set(f"{{{NSMAP['w']}}}author", "JBG")
+                dummy.set(f"{{{NSMAP['w']}}}date", datetime.now(timezone.utc).isoformat())
+                dummy.set(f"{{{NSMAP['w']}}}initials", "JBG")
+                p = etree.SubElement(dummy, f"{{{NSMAP['w']}}}p")
+                r = etree.SubElement(p, f"{{{NSMAP['w']}}}r")
+                t = etree.SubElement(r, f"{{{NSMAP['w']}}}t")
+                t.text = "Kommentar saknades, skapad automatiskt."
+                comments_root.append(dummy)
+                self.logger.info(f"🧩 Added dummy comment for id={cid}")
+
+        comments_tree.write(comments_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+        
+    def _ensure_rsid_definitions(self, tmp_dir):
+        settings_path = os.path.join(tmp_dir, "word", "settings.xml")
+        if not os.path.exists(settings_path):
+            self.logger.warning("⚠️ settings.xml not found — skipping rsid definitions.")
+            return
+
+        tree = etree.parse(settings_path)
+        root = tree.getroot()
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+        # Remove old <w:rsids> if exists
+        for elem in root.findall(f"{{{ns}}}rsids"):
+            root.remove(elem)
+
+        rsids = etree.Element(f"{{{ns}}}rsids")
+        rsid_val = "00A10B2F"
+        etree.SubElement(rsids, f"{{{ns}}}rsidRoot", {f"{{{ns}}}val": rsid_val})
+        etree.SubElement(rsids, f"{{{ns}}}rsid", {f"{{{ns}}}val": rsid_val})
+
+        root.insert(0, rsids)
+        tree.write(settings_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+        self.logger.info("📝 Added <w:rsids> to settings.xml.")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Repair .docx files using Word automation (Windows only).")

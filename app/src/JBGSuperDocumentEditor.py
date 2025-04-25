@@ -2,13 +2,16 @@ import os
 import shutil
 import uuid
 import docx
-from copy import deepcopy
 from app.src.JBGDocumentEditor import JBGDocumentEditor
 from app.src.JBGDocxRepairer import AutoDocxRepairer
+from app.src.JBGDocxInternalValidator import DocxInternalValidator
 from lxml import etree
 from tempfile import mkdtemp
 import zipfile
 from datetime import datetime, timezone
+from uuid import uuid4
+
+DEBUG = True
 
 class JBGSuperDocumentEditor:
     def __init__(self, filepath, changes_path, include_motivations, docx_mode, logger):
@@ -17,6 +20,8 @@ class JBGSuperDocumentEditor:
         self.include_motivations = include_motivations
         self.docx_mode = docx_mode
         self.logger = logger
+        if DEBUG:
+            self.logger.info(f" The filepath in __init__ for JBGSuperDocumentEditor is: {self.filepath}")
 
         self.ext = os.path.splitext(filepath)[1].lower()
         if self.ext == ".pdf":
@@ -99,7 +104,16 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         except Exception as ex:
             self.logger.warning(f"🧨 SuperEditor XML manipulation failed: {ex}")
             raise EditorProcessingException("Tracked changes manipulation failed.")
-
+        
+        # Validate before repair
+        validator = DocxInternalValidator(final_path)
+        errors = validator.validate()
+        if errors:
+            self.logger.warning("🧪 Pre-repair validation issues detected:")
+            for e in errors:
+                self.logger.warning(f"  {e}")
+        
+        # Try to repair
         repairer = AutoDocxRepairer(logger=self.logger)
         repaired_path = repairer.repair(final_path)
 
@@ -113,14 +127,23 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         - Convert red+strike → <w:del><w:r><w:delText>...</w:delText></w:r></w:del>
         - Convert green → <w:ins><w:r><w:t>...</w:t></w:r></w:ins>
         """
+        self.logger.info(f"_convert_markup_to_tracked has input file {input_docx_path}")
+        def random_hex_string(length=8):
+            return os.urandom(length).hex()
+        
         nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
         tracked_id = 1
         temp_dir = mkdtemp()
         output_path = os.path.join(temp_dir, os.path.basename(input_docx_path).replace("_interim", "_tracked"))
-
+        
+        # Unpack
         with zipfile.ZipFile(input_docx_path, "r") as zin:
             zin.extractall(temp_dir)
+            
+        # Repair the interim package by merging missing files, if needed
+        self._merge_missing_parts(self.filepath, temp_dir)
 
+        # Start manipulating the XML structure
         doc_path = os.path.join(temp_dir, "word", "document.xml")
         parser = etree.XMLParser(remove_blank_text=True)
         tree = etree.parse(doc_path, parser)
@@ -170,6 +193,10 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
             wrapper.set(f"{{{nsmap['w']}}}id", str(tracked_id))
             wrapper.set(f"{{{nsmap['w']}}}author", "JBG Klarspråkningstjänst")
             wrapper.set(f"{{{nsmap['w']}}}date", datetime.now(timezone.utc).isoformat())
+            rsid = random_hex_string() # Like "00A10B2F"
+            wrapper.set(f"{{{nsmap['w']}}}rsidR", rsid)
+            wrapper.set(f"{{{nsmap['w']}}}{'rsidDel' if is_red_strike else 'rsidIns'}", rsid)
+            
             tracked_id += 1
 
             wrapper.append(run_copy)
@@ -182,9 +209,32 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                 comment_ref_run.append(etree.fromstring(etree.tostring(comment_ref)))
                 parent.insert(index + 1, comment_ref_run)
 
+        for para in root.xpath("//w:p", namespaces=nsmap):
+            para.set("{http://schemas.microsoft.com/office/word/2010/wordml}paraId", uuid4().hex[:8])
+            para.set("{http://schemas.microsoft.com/office/word/2010/wordml}textId", uuid4().hex[:8])
+        
+        # Write back
         tree.write(doc_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
         self.logger.info("🔁 Replaced visual markups with tracked changes XML.")
+        
+        # Check no overlapping tags
+        if root.xpath("//w:ins//w:del", namespaces=nsmap):
+            raise EditorProcessingException("Invalid nesting: <w:del> inside <w:ins>")
+        if root.xpath("//w:del//w:ins", namespaces=nsmap):
+            raise EditorProcessingException("Invalid nesting: <w:ins> inside <w:del>")
+        
+        # Ensure all required files exist 
+        required_paths = [
+            os.path.join(temp_dir, "word", "document.xml"),
+            os.path.join(temp_dir, "word", "comments.xml"),
+            os.path.join(temp_dir, "word", "settings.xml"),
+            os.path.join(temp_dir, "word", "_rels", "document.xml.rels")
+        ]
+        for path in required_paths:
+            if not os.path.exists(path):
+                self.logger.warning(f"⚠️ Required file missing: {path}")
 
+        # Repack
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
             for root_dir, _, files in os.walk(temp_dir):
                 for file in files:
@@ -192,8 +242,60 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                     archive_name = os.path.relpath(full_path, temp_dir)
                     zout.write(full_path, archive_name)
 
+        # After zipfile.ZipFile(...) repack
+        if DEBUG:
+            with zipfile.ZipFile(output_path, 'r') as zcheck:
+                for f in zcheck.namelist():
+                    print("✅ Included in final ZIP:", f)
+        
         self.logger.info(f"✅ Tracked DOCX saved: {output_path}")
+        
         return output_path
+    
+    # Ensure original file structure is preserved by copying missing original files
+    # on demand
+    def _merge_missing_parts(self, source_docx_path, temp_dir):
+
+        backup_dir = mkdtemp()
+        with zipfile.ZipFile(source_docx_path, 'r') as zin:
+            zin.extractall(backup_dir)
+
+        required_files = [
+            "word/styles.xml",
+            "word/settings.xml",
+            "word/fontTable.xml",
+            "word/webSettings.xml",
+            "word/_rels/document.xml.rels"
+        ]
+
+        for rel_path in required_files:
+            src = os.path.join(backup_dir, rel_path)
+            dst = os.path.join(temp_dir, rel_path)
+            if not os.path.exists(dst):
+                if os.path.exists(src):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copyfile(src, dst)
+                    self.logger.info(f"📥 Recovered missing file from original: {rel_path}")
+                elif rel_path.endswith("styles.xml"):
+                    # Inject minimal styles.xml
+                    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                    root = etree.Element(f"{{{ns}}}styles", nsmap={"w": ns})
+
+                    def add_style(style_id, type_):
+                        style = etree.SubElement(root, f"{{{ns}}}style", attrib={
+                            f"{{{ns}}}type": type_,
+                            f"{{{ns}}}styleId": style_id
+                        })
+                        etree.SubElement(style, f"{{{ns}}}name", attrib={f"{{{ns}}}val": style_id})
+
+                    for sid in ["Normal", "DefaultParagraphFont", "TableNormal", "CommentText", "InsertedText", "DeletedText"]:
+                        add_style(sid, "character" if "Text" in sid else "paragraph")
+
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    etree.ElementTree(root).write(dst, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+                    self.logger.info(f"🧬 Injected minimal styles.xml with required tracked-change styles")
+
+        shutil.rmtree(backup_dir)
     
     def save(self, output_path=None):
         if not output_path:
