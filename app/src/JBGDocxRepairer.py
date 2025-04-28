@@ -38,17 +38,18 @@ class AutoDocxRepairer:
 
     def repair(self, input_path, output_path=None):
         
-        if not output_path:
-            output_path = input_path
+        output_path = output_path or input_path
 
-        validator = DocxInternalValidator(output_path)
+        repaired_file = self.repairer.repair(input_path, output_path)
+        
+        validator = DocxInternalValidator(repaired_file)
         errors = validator.validate()
         if errors:
-            self._log("⚠️ Validator flagged issues pre-repair:")
+            self._log("⚠️ Validator flagged issues post-repair:")
             for e in errors:
                 self._log(f"  {e}")
-
-        return self.repairer.repair(input_path, output_path)
+        
+        return repaired_file 
 
 class WordRepairer:
     def __init__(self, logger=None, enabled=True):
@@ -162,6 +163,7 @@ class DocxXmlRepairer:
                     self.logger.warning("⚠️ comments.xml is malformed — repairing.")
                     self._repair_comments_in_dir(tmp_dir)
 
+            # Make all the hard work...
             self._add_comment_infra_files(tmp_dir)
             self._ensure_extended_comment_relationships(tmp_dir)
             self._ensure_content_type_overrides(tmp_dir)
@@ -170,6 +172,7 @@ class DocxXmlRepairer:
             self._ensure_comment_relationship(tmp_dir)
             self._enable_track_revisions(tmp_dir)
             self._ensure_rsid_definitions(tmp_dir)
+            self._ensure_styles_definitions(tmp_dir) 
             
             # Ensure all required files exist 
             required_paths = [
@@ -444,29 +447,100 @@ class DocxXmlRepairer:
                 self.logger.info(f"🧩 Added dummy comment for id={cid}")
 
         comments_tree.write(comments_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
-        
+
     def _ensure_rsid_definitions(self, tmp_dir):
         settings_path = os.path.join(tmp_dir, "word", "settings.xml")
         if not os.path.exists(settings_path):
             self.logger.warning("⚠️ settings.xml not found — skipping rsid definitions.")
             return
 
-        tree = etree.parse(settings_path)
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(settings_path, parser)
         root = tree.getroot()
         ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-        # Remove old <w:rsids> if exists
-        for elem in root.findall(f"{{{ns}}}rsids"):
-            root.remove(elem)
+        existing_rsids = root.find(f"{{{ns}}}rsids")
+        
+        if existing_rsids is not None:
+            self.logger.info("✅ RSID definitions already exist — no need to overwrite.")
+            return  # Do not touch if already there!
 
+        # If no rsids exist, create a realistic one
         rsids = etree.Element(f"{{{ns}}}rsids")
-        rsid_val = "00A10B2F"
-        etree.SubElement(rsids, f"{{{ns}}}rsidRoot", {f"{{{ns}}}val": rsid_val})
-        etree.SubElement(rsids, f"{{{ns}}}rsid", {f"{{{ns}}}val": rsid_val})
+        rsid_list = [os.urandom(4).hex() for _ in range(random.randint(8, 15))]
 
+        etree.SubElement(rsids, f"{{{ns}}}rsidRoot", {f"{{{ns}}}val": rsid_list[0]})
+        for rsid in rsid_list:
+            etree.SubElement(rsids, f"{{{ns}}}rsid", {f"{{{ns}}}val": rsid})
+
+        # Insert it early inside settings.xml
         root.insert(0, rsids)
+
+        tree = etree.ElementTree(root)
         tree.write(settings_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
-        self.logger.info("📝 Added <w:rsids> to settings.xml.")
+
+        self.logger.info(f"📝 Injected {len(rsid_list)} RSID entries into settings.xml.")
+        
+    def _ensure_styles_definitions(self, tmp_dir):
+        """
+        Ensure that styles.xml exists and contains mandatory base styles (Normal, TableNormal, etc.).
+        """
+
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        nsmap = {"w": ns}
+        styles_path = os.path.join(tmp_dir, "word", "styles.xml")
+
+        # Check if styles.xml exists
+        if not os.path.exists(styles_path):
+            self.logger.warning(f"⚠️ styles.xml missing — creating minimal version.")
+
+            # Create minimal root
+            root = etree.Element(f"{{{ns}}}styles", nsmap=nsmap)
+            tree = etree.ElementTree(root)
+        else:
+            parser = etree.XMLParser(remove_blank_text=True)
+            try:
+                tree = etree.parse(styles_path, parser)
+                root = tree.getroot()
+            except Exception as ex:
+                self.logger.warning(f"⚠️ styles.xml corrupted ({ex}) — recreating.")
+                root = etree.Element(f"{{{ns}}}styles", nsmap=nsmap)
+                tree = etree.ElementTree(root)
+
+        existing_styles = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
+
+        # Define required base styles
+        required_styles = [
+            ("Normal", "paragraph", "Normal", True),
+            ("DefaultParagraphFont", "character", "Default Paragraph Font", False),
+            ("TableNormal", "table", "Table Normal", False),
+            ("CommentText", "character", "Comment Text", False),
+            ("InsertedText", "character", "Inserted Text", False),
+            ("DeletedText", "character", "Deleted Text", False)
+        ]
+
+        added = 0
+        for style_id, style_type, style_name, is_default in required_styles:
+            if style_id not in existing_styles:
+                style = etree.Element(f"{{{ns}}}style", {
+                    f"{{{ns}}}type": style_type,
+                    f"{{{ns}}}styleId": style_id
+                })
+                if is_default:
+                    style.set(f"{{{ns}}}default", "1")
+
+                etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_name})
+                if style_id == "Normal":
+                    etree.SubElement(style, f"{{{ns}}}qFormat")
+                root.append(style)
+                added += 1
+
+        # Save only if we added anything
+        if added > 0 or not os.path.exists(styles_path):
+            tree.write(styles_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info(f"📝 Added {added} missing styles into styles.xml during repair.")
+        else:
+            self.logger.info(f"✅ All critical styles already present in styles.xml during repair.")
 
 
 def main():
