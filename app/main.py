@@ -54,6 +54,52 @@ def setup_run_logger(log_path):
 
     return logger
 
+def load_prompt_parts(prompt_path):
+    """
+    Splits the prompt policy into editable and locked parts cleanly.
+    Removes all comment markers like <!-- START_EDITABLE -->, <!-- START_LOCKED -->, etc.
+    """
+    with open(prompt_path, encoding="utf-8") as f:
+        content = f.read()
+
+    start_edit = content.find("<!-- START_EDITABLE -->")
+    end_edit = content.find("<!-- END_EDITABLE -->")
+
+    if start_edit == -1 or end_edit == -1:
+        raise ValueError("Prompt policy missing START/END_EDITABLE markers!")
+
+    # Extract parts
+    editable_part = content[start_edit + len("<!-- START_EDITABLE -->"):end_edit].strip()
+    locked_part_before = content[:start_edit].strip()
+    locked_part_after = content[end_edit + len("<!-- END_EDITABLE -->"):].strip()
+
+    # Remove any other markers inside locked parts
+    for marker in ["<!-- START_LOCKED -->", "<!-- END_LOCKED -->",
+                   "<!-- START_EDITABLE -->", "<!-- END_EDITABLE -->"]:
+        locked_part_before = locked_part_before.replace(marker, "").strip()
+        locked_part_after = locked_part_after.replace(marker, "").strip()
+
+    return editable_part, locked_part_before, locked_part_after
+
+def validate_prompt(editable_part: str):
+    """
+    Validates the user-edited prompt to ensure it does not accidentally include forbidden system markers.
+    Raises ValueError if illegal markers are found.
+    """
+    forbidden_tags = [
+        "<!-- START_EDITABLE -->",
+        "<!-- END_EDITABLE -->",
+        "<!-- START_LOCKED -->",
+        "<!-- END_LOCKED -->",
+    ]
+
+    for tag in forbidden_tags:
+        if tag in editable_part:
+            raise ValueError(f"❌ Forbidden tag '{tag}' found in editable prompt area!")
+
+    return True  # If OK
+
+
 # We are using FastAPI for the backend
 app = FastAPI()
 
@@ -72,9 +118,14 @@ templates = Jinja2Templates(directory="templates")
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+@app.get("/get_editable_prompt/")
+def get_editable_prompt():
+    editable_part, _, _ = load_prompt_parts(os.path.join(BASE_DIR, "policy", "prompt_policy.md"))
+    return {"editable_prompt": editable_part}
+
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
-    custom_prompt: str = Form(""), temperature: float = Form(0.7), include_motivations: bool = Form(True), \
+    editable_prompt: str = Form(""), temperature: float = Form(0.7), include_motivations: bool = Form(True), \
     docx_mode: str = Form("simple")):
     
     # Create fresh timestamp for each request
@@ -98,13 +149,13 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
     logger.info(f"📝 DOCX markup mode: {docx_mode}")
     
     # Load base prompt policy from file
-    with open(os.path.join(BASE_DIR, "policy", "prompt_policy.md"), encoding="utf-8") as f:
-        base_prompt = f.read().strip()
+    # Instead of opening whole prompt_policy.md
+    editable_part = editable_prompt.strip()
+    _, locked_before, locked_after = load_prompt_parts(os.path.join(BASE_DIR, "policy", "prompt_policy.md"))
 
-    # Merge with custom prompt if provided
-    full_prompt = base_prompt
-    if custom_prompt:
-        full_prompt += "\n\nSpecifika instruktioner:\n" + custom_prompt.strip()
+    # Build full prompt
+    full_prompt = f"{locked_before}\n\n{editable_part}\n\n{locked_after}"
+    validate_prompt(full_prompt)
 
     # Run language improvement pipeline
     improver = JBGLanguageImprover(

@@ -245,20 +245,28 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                 comment_ref_run.append(etree.fromstring(etree.tostring(comment_ref)))
                 parent.insert(index + 1, comment_ref_run)
 
+        # Try to insert rsid's in a way that mimic human behavior
+        current_rsid = random.choice(available_rsids)
+        paragraph_counter = 0
         for para in root.xpath("//w:p", namespaces=nsmap):
             para.set("{http://schemas.microsoft.com/office/word/2010/wordml}paraId", uuid4().hex[:8])
             para.set("{http://schemas.microsoft.com/office/word/2010/wordml}textId", uuid4().hex[:8])
-            
-            assigned_rsid = random.choice(available_rsids)
-            
-            para.set(f"{{{nsmap['w']}}}rsidR", assigned_rsid)
-            para.set(f"{{{nsmap['w']}}}rsidP", assigned_rsid)
-            para.set(f"{{{nsmap['w']}}}rsidRPr", assigned_rsid)  # Also patch paragraph run properties if possible
+
+            para.set(f"{{{nsmap['w']}}}rsidR", current_rsid)
+            para.set(f"{{{nsmap['w']}}}rsidP", current_rsid)
+            para.set(f"{{{nsmap['w']}}}rsidRPr", current_rsid)
+
+            paragraph_counter += 1
+            if paragraph_counter >= random.randint(2, 4):
+                current_rsid = random.choice(available_rsids)
+                paragraph_counter = 0
 
         # Save modified document.xml
         tree.write(doc_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
-
         self.logger.info("🔁 Replaced visual markups with tracked changes XML.")
+        
+        # Clean up the xml tree
+        self._clean_xml_tree(doc_path)
 
         # Repackage everything
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -270,6 +278,33 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
 
         self.logger.info(f"✅ Tracked DOCX saved: {output_path}")
         return output_path
+    
+    def _clean_xml_tree(self, doc_path):
+        """
+        Clean up empty or invalid XML elements to ensure Word compatibility.
+        """
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(doc_path, parser)
+        root = tree.getroot()
+        nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+        # Remove empty proofErr, noProof, etc
+        for tag in ["proofErr", "noProof"]:
+            for elem in root.xpath(f"//w:{tag}", namespaces=nsmap):
+                parent = elem.getparent()
+                if parent is not None:
+                    parent.remove(elem)
+
+        # Remove empty run properties
+        for rpr in root.xpath("//w:rPr", namespaces=nsmap):
+            if len(rpr) == 0:
+                parent = rpr.getparent()
+                if parent is not None:
+                    parent.remove(rpr)
+
+        tree.write(doc_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+        self.logger.info("🧹 Cleaned up empty XML tags in document.xml.")
+
     
     # Ensure original file structure is preserved by copying missing original files
     # on demand
@@ -310,52 +345,69 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
             return True
 
     # Helper to patch incomplete styles.xml
-    def _patch_or_inject_styles(self, dst_path):
+    def _patch_or_inject_styles(self, styles_path):
+        """
+        Ensure critical styles exist inside styles.xml.
+        If missing, inject Normal, DefaultParagraphFont, TableNormal, CommentText, InsertedText, DeletedText.
+        """
         ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
         nsmap = {"w": ns}
+
+        if not os.path.exists(styles_path):
+            self.logger.warning(f"⚠️ styles.xml missing — creating minimal styles.xml")
+            root = etree.Element(f"{{{ns}}}styles", nsmap=nsmap)
+            tree = etree.ElementTree(root)
+        else:
+            parser = etree.XMLParser(remove_blank_text=True)
+            try:
+                tree = etree.parse(styles_path, parser)
+                root = tree.getroot()
+            except Exception as ex:
+                self.logger.warning(f"⚠️ styles.xml corrupted ({ex}) — recreating minimal styles.xml")
+                root = etree.Element(f"{{{ns}}}styles", nsmap=nsmap)
+                tree = etree.ElementTree(root)
+
+        existing_styles = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
+
+        # Required base styles
         required_styles = [
-            ("Normal", "paragraph"),
-            ("DefaultParagraphFont", "character"),
-            ("TableNormal", "table"),
-            ("CommentText", "character"),
-            ("InsertedText", "character"),
-            ("DeletedText", "character")
+            ("Normal", "paragraph", "Normal", True),
+            ("DefaultParagraphFont", "character", "Default Paragraph Font", False),
+            ("TableNormal", "table", "Table Normal", False),
+            ("CommentText", "character", "Comment Text", False),
+            ("InsertedText", "character", "Inserted Text", False),
+            ("DeletedText", "character", "Deleted Text", False),
         ]
 
-        if not os.path.exists(dst_path):
-            self.logger.warning("⚠️ styles.xml missing, injecting minimal.")
-            self._inject_minimal_styles_xml(dst_path)
-            return
-
-        try:
-            parser = etree.XMLParser(remove_blank_text=True)
-            tree = etree.parse(dst_path, parser)
-            root = tree.getroot()
-        except Exception as e:
-            self.logger.warning(f"⚠️ Failed to parse styles.xml: {e}. Injecting minimal instead.")
-            self._inject_minimal_styles_xml(dst_path)
-            return
-
-        existing_ids = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
         added = 0
-
-        for style_id, style_type in required_styles:
-            if style_id not in existing_ids:
-                style = etree.SubElement(root, f"{{{ns}}}style", {
+        for style_id, style_type, style_name, is_default in required_styles:
+            if style_id not in existing_styles:
+                style = etree.Element(f"{{{ns}}}style", {
                     f"{{{ns}}}type": style_type,
                     f"{{{ns}}}styleId": style_id
                 })
-                etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_id})
-                if style_id == "Normal":
+                if is_default:
                     style.set(f"{{{ns}}}default", "1")
-                added += 1
-                self.logger.info(f"➕ Injected missing style: {style_id}")
 
-        if added > 0:
-            tree.write(dst_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
-            self.logger.info(f"✅ Added {added} missing styles to styles.xml")
+                etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_name})
+
+                if style_id == "Normal":
+                    etree.SubElement(style, f"{{{ns}}}qFormat")
+
+                if style_id == "TableNormal":
+                    tblpr = etree.SubElement(style, f"{{{ns}}}tblPr")
+                    # Insert minimal table properties expected by Word
+                    etree.SubElement(tblpr, f"{{{ns}}}tblStyleRowBandSize", {f"{{{ns}}}val": "1"})
+                    etree.SubElement(tblpr, f"{{{ns}}}tblStyleColBandSize", {f"{{{ns}}}val": "1"})
+
+                root.append(style)
+                added += 1
+
+        if added > 0 or not os.path.exists(styles_path):
+            tree.write(styles_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            self.logger.info(f"📝 Added {added} missing styles into styles.xml.")
         else:
-            self.logger.info("✅ All required styles already present.")
+            self.logger.info(f"✅ All critical styles already present in styles.xml.")
 
     
     # Helper to inject minimal styles.xml
@@ -473,6 +525,11 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         if root.find(f"./{{{ns}}}compat") is None:
             etree.SubElement(root, f"{{{ns}}}compat")
             self.logger.info("📝 Added <w:compat> to settings.xml.")
+        
+        # Ensure <updateFields> exists
+        if root.find(f"./{{{ns}}}updateFields") is None:
+            etree.SubElement(root, f"{{{ns}}}updateFields", {f"{{{ns}}}val": "true"})
+            self.logger.info("📝 Added <w:updateFields w:val='true'/> to settings.xml.")
 
         tree = etree.ElementTree(root)
         tree.write(settings_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
@@ -558,15 +615,13 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
 
     def _estimate_rsid_count_from_document(self, docx_path=None):
         """
-        Analyze document.xml inside the given .docx archive or extracted folder to estimate RSID count.
+        Analyze document.xml to estimate RSID count more realistically.
         """
-        
-        estimated_count = 8
+        estimated_count = 50
         docx_path = docx_path or self.filepath
 
         try:
             if os.path.isdir(docx_path):
-                # It's an extracted folder
                 doc_xml_path = os.path.join(docx_path, "word", "document.xml")
                 if not os.path.exists(doc_xml_path):
                     self.logger.warning(f"⚠️ document.xml missing inside extracted folder {docx_path}")
@@ -577,7 +632,6 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                 paragraphs = tree.xpath('//w:p', namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})
                 para_count = len(paragraphs)
             else:
-                # It's a zipped .docx
                 with zipfile.ZipFile(docx_path, 'r') as zin:
                     if 'word/document.xml' not in zin.namelist():
                         self.logger.warning(f"⚠️ document.xml missing inside {docx_path}")
@@ -589,18 +643,17 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
                         para_count = len(paragraphs)
 
             if para_count < 20:
-                estimated_count = 8
+                estimated_count = 50
             elif para_count < 100:
-                estimated_count = 15
+                estimated_count = 100
             else:
-                estimated_count = 30
+                estimated_count = 200
 
-            self.logger.info(f"📄 Detected {para_count} paragraphs in {docx_path} → Suggest {estimated_count} RSIDs.")
+            self.logger.info(f"📄 Detected {para_count} paragraphs → Suggest {estimated_count} RSIDs.")
         except Exception as ex:
-            self.logger.warning(f"⚠️ Failed to estimate paragraph count from {docx_path}: {ex}")
+            self.logger.warning(f"⚠️ Failed to estimate paragraph count: {ex}")
 
         return estimated_count
-
 
     def _merge_missing_parts(self, source_docx_path, temp_dir):
         backup_dir = mkdtemp()

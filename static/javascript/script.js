@@ -13,6 +13,15 @@ document.addEventListener("DOMContentLoaded", () => {
             tempDisplay.textContent = this.value;
         });
     }
+    // Fetch editable prompt
+    fetch('/get_editable_prompt/')
+    .then(response => response.json())
+    .then(data => {
+        document.getElementById("editablePrompt").value = data.editable_prompt;
+    })
+    .catch(error => {
+        console.error("Failed to fetch editable prompt:", error);
+    });
   });
 
 document.getElementById("uploadForm").addEventListener("submit", async (e) => {
@@ -22,8 +31,7 @@ const fileInput = document.getElementById("documentFile");
 const file = fileInput.files[0];
 const apiKey = document.getElementById("apiKey").value.trim();
 const model = document.getElementById("model").value;
-const customPrompt = document.getElementById("customPrompt").value.trim();
-
+const editablePrompt = document.getElementById("editablePrompt").value.trim();
 const temperature = parseFloat(document.getElementById("temperature").value);
 const includeMotivations = document.getElementById("includeMotivations").checked;
 const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
@@ -45,7 +53,7 @@ const formData = new FormData();
 formData.append("file", file);
 formData.append("api_key", apiKey);
 formData.append("model", model);
-formData.append("custom_prompt", customPrompt);
+formData.append("editable_prompt", editablePrompt);
 formData.append("temperature", temperature);
 formData.append("include_motivations", includeMotivations);
 formData.append("docx_mode", docxMode);
