@@ -518,8 +518,6 @@ class DocxXmlRepairer:
 
         existing_styles = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
 
-        # Define required base styles
-        
         added = 0
         for style_id, style_type, style_name, is_default in self.required_styles:
             if style_id not in existing_styles:
@@ -531,17 +529,25 @@ class DocxXmlRepairer:
                     style.set(f"{{{ns}}}default", "1")
 
                 etree.SubElement(style, f"{{{ns}}}name", {f"{{{ns}}}val": style_name})
+
+                # Add qFormat for Normal style
                 if style_id == "Normal":
                     etree.SubElement(style, f"{{{ns}}}qFormat")
+
+                # Add basedOn for comment-related styles
+                if style_id in {"CommentText", "InsertedText", "DeletedText"}:
+                    etree.SubElement(style, f"{{{ns}}}basedOn", {f"{{{ns}}}val": "DefaultParagraphFont"})
+
                 root.append(style)
                 added += 1
 
-        # Save only if we added anything
+        # Save if we added anything or created a new file
         if added > 0 or not os.path.exists(styles_path):
             tree.write(styles_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
-            self.logger.info(f"📝 Added {added} missing styles into styles.xml during repair.")
+            self.logger.info(f"📝 Added {added} missing base styles into styles.xml during repair.")
         else:
             self.logger.info(f"✅ All critical styles already present in styles.xml during repair.")
+
 
 
 def main():
