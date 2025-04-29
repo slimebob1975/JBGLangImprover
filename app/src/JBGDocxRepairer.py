@@ -9,6 +9,14 @@ import shutil
 from app.src.JBGDocxInternalValidator import DocxInternalValidator
 
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+REQUIRED_STYLES = [
+            ("Normal", "paragraph", "Normal", True),
+            ("DefaultParagraphFont", "character", "Default Paragraph Font", False),
+            ("TableNormal", "table", "Table Normal", False),
+            ("CommentText", "character", "Comment Text", False),
+            ("InsertedText", "character", "Inserted Text", False),
+            ("DeletedText", "character", "Deleted Text", False)
+            ]
     
 class AutoDocxRepairer:
     def __init__(self, logger=None):
@@ -141,6 +149,7 @@ class DocxXmlRepairer:
     
     def __init__(self, logger=None):
         self.logger = logger or print
+        self.required_styles = REQUIRED_STYLES
 
     def repair(self, docx_path, output_path=None):
         
@@ -510,17 +519,9 @@ class DocxXmlRepairer:
         existing_styles = {s.get(f"{{{ns}}}styleId") for s in root.findall(".//w:style", namespaces=nsmap)}
 
         # Define required base styles
-        required_styles = [
-            ("Normal", "paragraph", "Normal", True),
-            ("DefaultParagraphFont", "character", "Default Paragraph Font", False),
-            ("TableNormal", "table", "Table Normal", False),
-            ("CommentText", "character", "Comment Text", False),
-            ("InsertedText", "character", "Inserted Text", False),
-            ("DeletedText", "character", "Deleted Text", False)
-        ]
-
+        
         added = 0
-        for style_id, style_type, style_name, is_default in required_styles:
+        for style_id, style_type, style_name, is_default in self.required_styles:
             if style_id not in existing_styles:
                 style = etree.Element(f"{{{ns}}}style", {
                     f"{{{ns}}}type": style_type,

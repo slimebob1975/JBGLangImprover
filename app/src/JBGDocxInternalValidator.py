@@ -5,6 +5,77 @@ import os
 from lxml import etree
 import shutil
 
+STYLE_TRANSLATION_MAP = {
+    # Paragraph Styles
+    "Standard": "Normal",  # Common base style
+    "Standardstycketeckensnitt": "DefaultParagraphFont",
+    "Normaltabell": "TableNormal",
+    "Rubrik": "Title",
+    "Rubrik1": "heading 1",
+    "Rubrik2": "heading 2",
+    "Rubrik3": "heading 3",
+    "Rubrik4": "heading 4",
+    "Rubrik5": "heading 5",
+    "Rubrik6": "heading 6",
+    "Rubrik7": "heading 7",
+    "Rubrik8": "heading 8",
+    "Rubrik9": "heading 9",
+    "Underrubrik": "Subtitle",
+    "Brödtext": "Body Text",
+    "Fotnotstext": "footnote text",
+    "Sidhuvud": "header",
+    "Sidfot": "footer",
+    "Citat": "Quote",
+    "Ballongtext": "Balloon Text",
+    "Beskrivning": "caption",
+    "Slutkommentar": "endnote text",
+    "Tabellrubrik": "Table Heading",
+    "Innehåll1": "toc 1",
+    "Innehåll2": "toc 2",
+    "Innehåll3": "toc 3",
+    "Innehållsförteckningsrubrik": "TOC Heading",
+    
+    # Character Styles
+    "Rubrik1Char": "heading 1 Char",
+    "Rubrik2Char": "heading 2 Char",
+    "Rubrik3Char": "heading 3 Char",
+    "Rubrik4Char": "heading 4 Char",
+    "Rubrik5Char": "heading 5 Char",
+    "Rubrik6Char": "heading 6 Char",
+    "Rubrik7Char": "heading 7 Char",
+    "Rubrik8Char": "heading 8 Char",
+    "Rubrik9Char": "heading 9 Char",
+    "RubrikChar": "Title Char",
+    "UnderrubrikChar": "Subtitle Char",
+    "BrdtextChar": "Body Text Char",
+    "BallongtextChar": "Balloon Text Char",
+    "Doldtext": "Hidden Text",
+    "Hyperlnk": "Hyperlink",
+    "FotnotstextChar": "Footnote Text Char",
+    "SlutkommentarChar": "Endnote Text Char",
+    "SidhuvudChar": "Header Char",
+    "SidfotChar": "Footer Char",
+    "CitatChar": "Quote Char",
+    "Platshållartext": "Placeholder Text",
+
+    # Special
+    "Ingenlista": "No List",
+    "Punktlista": "List Bullet",
+    "Punktlista2": "List Bullet 2",
+    "Punktlista3": "List Bullet 3",
+    "Numreradlista": "List Number",
+    "Numreradlista2": "List Number 2",
+    "Numreradlista3": "List Number 3",
+    "Sidnummer": "page number",
+
+    # Table Styles
+    "Tabellrutnät": "Table Grid",
+    "IAF": "TableNormal",
+    "IAFBlåkolumn": "Table Colorful 1",
+}
+
+REQUIRED_STYLES = ["Normal", "DefaultParagraphFont", "TableNormal", "CommentText", "InsertedText", "DeletedText"]
+
 class DocxInternalValidator:
     def __init__(self, docx_path):
         self.docx_path = docx_path
@@ -35,6 +106,7 @@ class DocxInternalValidator:
                 self.errors.append(f"⚠️ Missing relationship to {target}")
 
     def _validate_styles(self):
+                
         styles_path = os.path.join(self.temp_dir, "word", "styles.xml")
         if not os.path.exists(styles_path):
             self.errors.append("❌ Missing styles.xml")
@@ -44,11 +116,10 @@ class DocxInternalValidator:
         root = tree.getroot()
 
         style_ids = {s.get("w:styleId") for s in root.findall(".//w:style", namespaces={"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"})}
+        normalized_ids = {STYLE_TRANSLATION_MAP.get(sid, sid) for sid in style_ids}
 
-        required_styles = ["Normal", "DefaultParagraphFont", "TableNormal", "CommentText", "InsertedText", "DeletedText"]
-
-        for style in required_styles:
-            if style not in style_ids:
+        for style in REQUIRED_STYLES:
+            if style not in normalized_ids:
                 self.errors.append(f"⚠️ Missing style: {style}")
 
     def _validate_settings(self):

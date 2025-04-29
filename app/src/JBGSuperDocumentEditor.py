@@ -178,6 +178,7 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
 
         # Patch styles
         self._patch_or_inject_styles(styles_path)
+        self._ensure_required_styles_in_document_xml(temp_dir)
 
         # Fix settings
         self._fix_or_inject_settings_xml(settings_path)
@@ -537,6 +538,44 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         self.logger.info("🛠 Ensured <w:trackRevisions> and empty <w:rsids> exist in settings.xml.")
 
 
+    def _ensure_required_styles_in_document_xml(self, docx_tmp_dir):
+        """
+        Make sure document.xml paragraphs and runs reference canonical styles like Normal and DefaultParagraphFont.
+        """
+        document_path = os.path.join(docx_tmp_dir, "word", "document.xml")
+        
+        if not os.path.exists(document_path):
+            self.logger.warning(f"⚠️ document.xml missing — cannot fix styles.")
+            return
+
+        nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+        parser = etree.XMLParser(remove_blank_text=True)
+        tree = etree.parse(document_path, parser)
+        root = tree.getroot()
+
+        fixed_paragraphs = 0
+
+        for para in root.xpath("//w:body/w:p", namespaces=nsmap):
+            ppr = para.find("w:pPr", namespaces=nsmap)
+            if ppr is None:
+                ppr = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
+                para.insert(0, ppr)
+
+            # Check if paragraph already has a pStyle
+            pstyle = ppr.find("w:pStyle", namespaces=nsmap)
+            if pstyle is None:
+                pstyle = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle")
+                pstyle.attrib["{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val"] = "Normal"
+                ppr.insert(0, pstyle)
+                fixed_paragraphs += 1
+
+        if fixed_paragraphs > 0:
+            tree.write(document_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+            self.logger.info(f"✅ Injected Normal style into {fixed_paragraphs} paragraphs in document.xml")
+        else:
+            self.logger.info("✅ All paragraphs already have paragraph styles defined.")
+    
     def _inject_fresh_styles_xml(self, styles_path):
         """
         Completely rebuilds a minimal but valid styles.xml required by Word.
