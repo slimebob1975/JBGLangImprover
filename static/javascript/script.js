@@ -7,12 +7,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const temperatureSlider = document.getElementById("temperature");
     const tempDisplay = document.getElementById("tempDisplay");
+    const modelSelect = document.getElementById("model");
 
-    if (temperatureSlider && tempDisplay) {
-        temperatureSlider.addEventListener("input", function () {
-            tempDisplay.textContent = this.value;
-        });
+    // Reagera när modellen ändras
+    if (modelSelect) {
+        modelSelect.addEventListener("change", applyTemperaturePolicy);
+        applyTemperaturePolicy();
     }
+
+    // Initiera rätt läge vid sidladdning
+    applyTemperaturePolicy(modelSelect, temperatureSlider, tempDisplay);
+
+        if (temperatureSlider && tempDisplay) {
+            temperatureSlider.addEventListener("input", function () {
+                tempDisplay.textContent = this.value;
+            });
+        }
+    
     // Fetch editable prompt
     fetch('/get_editable_prompt/')
     .then(response => response.json())
@@ -23,6 +34,37 @@ document.addEventListener("DOMContentLoaded", () => {
         console.error("Failed to fetch editable prompt:", error);
     });
   });
+
+function applyTemperaturePolicy() {
+    console.log('applytemperaturePolicy')
+
+     // Get fresh references to get rid of scope problems
+    const modelSelect       = document.getElementById("model");
+    const temperatureSlider = document.getElementById("temperature");
+    const tempDisplay       = document.getElementById("tempDisplay");
+
+    if (!modelSelect || !temperatureSlider || !tempDisplay) return;
+    console.log('Not fast return')
+
+    const isGPT5 = modelSelect.value.startsWith("gpt-5");
+    if (isGPT5) {
+        console.log('model choice was gpt-5-based')
+        // Lås till 1 för GPT-5-modeller
+        temperatureSlider.value = "1";
+        tempDisplay.textContent = "1";
+        temperatureSlider.disabled = true;
+        temperatureSlider.setAttribute("aria-disabled", "true");
+        temperatureSlider.title = "Låst till 1 för GPT-5-modeller";
+    } else {
+        console.log('model choice was not gpt-5-based')
+        // Återställ för övriga modeller
+        temperatureSlider.disabled = false;
+        temperatureSlider.removeAttribute("aria-disabled");
+        temperatureSlider.title = "";
+        temperatureSlider.value = "0.7";
+        tempDisplay.textContent = "0.7";
+    }
+}
 
 document.getElementById("uploadForm").addEventListener("submit", async (e) => {
 e.preventDefault();
