@@ -18,12 +18,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // Initiera rätt läge vid sidladdning
     applyTemperaturePolicy(modelSelect, temperatureSlider, tempDisplay);
 
-        if (temperatureSlider && tempDisplay) {
-            temperatureSlider.addEventListener("input", function () {
-                tempDisplay.textContent = this.value;
-            });
-        }
-    
+    if (temperatureSlider && tempDisplay) {
+        temperatureSlider.addEventListener("input", function () {
+            tempDisplay.textContent = this.value;
+        });
+    }
+
     // Fetch editable prompt
     fetch('/get_editable_prompt/')
     .then(response => response.json())
