@@ -52,7 +52,6 @@ Exempel på JSON-struktur för utdata för .docx:
     "old": "gammal text",
     "new": "ny text",
     "paragraph": 2,
-    "xml_index": 1,
     "motivation": "Motivering till förändringen"
   }
 ]

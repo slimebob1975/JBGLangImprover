@@ -1,7 +1,7 @@
 import os
 import json
 import docx
-import fitz  # PyMuPDF
+import fitz
 import sys
 
 class DocumentStructureExtractor:
@@ -27,11 +27,10 @@ class DocumentStructureExtractor:
             "paragraphs": []
         }
 
-        for xml_index, para in enumerate(doc.paragraphs):
+        for i, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             structure["paragraphs"].append({
                 "paragraph": len(structure["paragraphs"]) + 1,  # visible index
-                "xml_index": xml_index,  # real docx index
                 "text": text,
                 "empty": not bool(text)
             })
@@ -71,13 +70,24 @@ class DocumentStructureExtractor:
             return None
     
 def main():
+    import logging
     
     if len(sys.argv) != 2:
         print(f"Usage: python {os.path.basename(__file__)} <docx or pdf document to generate JSON structure for>")
         sys.exit(1)
     
     filepath = sys.argv[1]
-    extractor = DocumentStructureExtractor(filepath)
+    
+    # Set up logger
+    logger = logging.getLogger("extratctor-test")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    
+    # Construct Extractor object
+    extractor = DocumentStructureExtractor(filepath, logger)
     extractor.extract()
     output_json = extractor.save_as_json()
     print(f"Structure saved to: {output_json}")

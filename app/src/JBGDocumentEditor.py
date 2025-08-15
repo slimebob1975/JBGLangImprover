@@ -13,6 +13,7 @@ import zipfile
 from lxml import etree
 from tempfile import mkdtemp
 from copy import deepcopy
+from difflib import ndiff
 
 DEBUG = True
 SUGGESTION = "Förslag"
@@ -103,70 +104,50 @@ class JBGDocumentEditor:
             para_index = idx + 1
             paragraph_text = para.text
 
-            # Collect all changes for this paragraph
             applicable_changes = [c for c in self.changes if c.get("paragraph") == para_index]
             if not applicable_changes:
                 continue
 
-            current_text = paragraph_text
-            rebuilt = [("text", current_text)]  # initial unstyled
+            rebuilt = []
+            applied = False
 
             for change in applicable_changes:
                 old, new = change["old"], change["new"]
-                norm_old = self._normalize_text(old)
+                if self._normalize_text(old) in self._normalize_text(paragraph_text):
+                    diffed = self._diff_words(old, new)
+                    rebuilt.extend(diffed)
+                    self.logger.info(f"✅ Applied: '{old}' → '{new}' in paragraph {para_index}")
+                    applied_changes.add((para_index, old))
+                    applied = True
 
-                new_rebuilt = []
-                for part_type, part_text in rebuilt:
-                    if part_type != "text":
-                        new_rebuilt.append((part_type, part_text))
-                        continue
+            if not applied:
+                continue
 
-                    norm_part = self._normalize_text(part_text)
-
-                    if norm_old not in norm_part:
-                        new_rebuilt.append((part_type, part_text))
-                        continue
-
-                    # Fuzzy split, but keep exact positions from original text
-                    split_parts = re.split(re.escape(old), part_text)
-                    for i, seg in enumerate(split_parts):
-                        if seg:
-                            new_rebuilt.append(("text", seg))
-                        if i < len(split_parts) - 1:
-                            new_rebuilt.append(("strike", old))
-                            new_rebuilt.append(("insert", new))
-
-                rebuilt = new_rebuilt
-                self.logger.info(f"✅ Applied: '{old}' → '{new}' in paragraph {para_index}")
-
-                applied_changes.add((para_index, old))
-
-            # Clear original runs
+            # Clear and rebuild paragraph
             for _ in range(len(para.runs)):
                 para._element.remove(para.runs[0]._element)
 
-            # Add styled runs
             for kind, val in rebuilt:
                 run = para.add_run(val)
                 if kind == "strike":
                     run.font.strike = True
                     run.font.color.rgb = RGBColor(255, 0, 0)
                 elif kind == "insert":
+                    run.font.color.rgb = RGBColor(0, 128, 0)
                     if self.docx_mode == "tracked":
-                        run.font.color.rgb = RGBColor(255, 0, 0)
                         run.font.underline = WD_UNDERLINE.SINGLE
-                    else:
-                        run.font.color.rgb = RGBColor(0, 128, 0)
 
-                    # Attach comment if available
-                    if self.include_motivations:
-                        for change in applicable_changes:
-                            if change["new"] == val and "motivation" in change:
-                                run.add_comment(
-                                    text=change["motivation"],
-                                    author="JBG klarspråkningstjänst",
-                                    initials="JBG"
-                                )
+            # 🟡 Attach one motivating comment to the paragraph
+            if self.include_motivations:
+                for change in applicable_changes:
+                    if "motivation" in change:
+                        para.add_comment(
+                            text=change["motivation"],
+                            author="JBG klarspråkningstjänst",
+                            initials="JBG"
+                        )
+                        break
+
 
         self._suggest_nearby_paragraphs(doc)
         
@@ -176,6 +157,25 @@ class JBGDocumentEditor:
                 self.logger.error(f"❌No match found for '{change['old']}' in paragraph {change['paragraph']}.")
 
         return doc
+    
+    def _diff_words(self, old, new):
+        """
+        Returns a list of tuples: (type, text)
+        type ∈ {"text", "insert", "strike"}
+        """
+        diff = list(ndiff(old.split(), new.split()))
+        result = []
+
+        for d in diff:
+            tag, word = d[0], d[2:]
+            if tag == " ":
+                result.append(("text", word + " "))
+            elif tag == "-":
+                result.append(("strike", word + " "))
+            elif tag == "+":
+                result.append(("insert", word + " "))
+
+        return result
     
     def _suggest_nearby_paragraphs(self, doc):
         total = len(doc.paragraphs)
