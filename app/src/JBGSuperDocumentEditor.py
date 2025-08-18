@@ -218,13 +218,17 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
             comment_ref = run.find("w:commentReference", namespaces=nsmap)
 
             text = text_elem.text or ""
+            if text and not text.endswith((" ", ".", ",", ";", ":", "!", "?", "”", "’")):
+                text += " "
             if is_red_strike:
-                deltext = etree.Element(f"{{{nsmap['w']}}}delText")
+                deltext = etree.Element(f"{{{nsmap['w']}}}delText", nsmap={"xml": "http://www.w3.org/XML/1998/namespace"})
+                deltext.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                 deltext.text = text
                 run_copy.append(deltext)
                 wrapper = etree.Element(f"{{{nsmap['w']}}}del")
             elif is_green_insert:
-                ins_text = etree.Element(f"{{{nsmap['w']}}}t")
+                ins_text = etree.Element(f"{{{nsmap['w']}}}t", nsmap={"xml": "http://www.w3.org/XML/1998/namespace"})
+                ins_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                 ins_text.text = text
                 run_copy.append(ins_text)
                 wrapper = etree.Element(f"{{{nsmap['w']}}}ins")
