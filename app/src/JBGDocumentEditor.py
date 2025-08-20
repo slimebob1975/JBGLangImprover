@@ -1,6 +1,6 @@
 import docx
 from docx.shared import RGBColor
-from docx.enum.text import WD_UNDERLINE
+from docx.table import _Cell
 from datetime import datetime, timezone
 import os
 import sys
@@ -12,17 +12,27 @@ import re
 import zipfile
 from lxml import etree
 from tempfile import mkdtemp
+import tempfile
+from zipfile import ZipFile
+
 from copy import deepcopy
 from difflib import ndiff
-
+from thefuzz import fuzz
+try:
+    from app.src.JBGDocumentStructureExtractor import DocumentStructureExtractor
+except ModuleNotFoundError:
+    from JBGDocumentStructureExtractor import DocumentStructureExtractor
+    
+# Settings
 DEBUG = True
 SUGGESTION = "Förslag"
 MOTIVATION = "Motivering"
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+TEXT_SIM_SCORE_THRESHOLD = 90.0
 
 class JBGDocumentEditor:
     
-    def __init__(self, filepath, changes_path, include_motivations, docx_mode, logger):
+    def __init__(self, filepath, changes_path, include_motivations, logger):
         """
         :param filepath: Path to the input document (.docx or .pdf)
         :param changes_path: Path to the suggested changes JSON file
@@ -31,7 +41,7 @@ class JBGDocumentEditor:
         self.changes = self._get_changes_from_json(changes_path)  
         self.logger = logger
         self.include_motivations = include_motivations
-        self.docx_mode = docx_mode  # "simple" or "tracked"
+        self.footnote_changes = []
         self.ext = os.path.splitext(filepath)[1].lower()
         self.edited_document = None
         self.nsmap = NSMAP
@@ -43,30 +53,43 @@ class JBGDocumentEditor:
 
     def apply_changes(self):
         try:
-            # Make a working copy
-            original_path = self.filepath
-            basename = os.path.basename(original_path)
-            temp_name = f"{uuid.uuid4()}_{basename}"
-            temp_dir = "uploads" if os.name == "nt" else "/tmp"
-            temp_path = os.path.join(temp_dir, temp_name)
-
-            shutil.copyfile(original_path, temp_path)
-            self.filepath = temp_path  # Redirect all edits to the temp copy
-
             # Choose method based on file type
             if self.filepath.endswith(".docx"):
-                if self.docx_mode == "tracked":
-                    self.edited_document = self._edit_docx_tracked()
-                else:
-                    self.edited_document = self._edit_docx()
+                self._apply_changes_docx()
             elif self.filepath.endswith(".pdf"):
-                self.edited_document = self._annotate_pdf()
+                self._apply_changes_pdf()
             else:
                 raise ValueError("Unsupported file format. Use .docx or .pdf!")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to apply changes: {e}")
             raise
+        
+    def _apply_changes_pdf(self):
+        self.edited_document = self._annotate_pdf()
+        
+    def _apply_changes_docx(self):
+        
+        # Step 1: Apply visual markup
+        markup_doc = self._edit_docx()
+
+        # Step 2: Save intermediate version (used in both modes)
+        intermediate_path = self._save_edited_document(doc=markup_doc, suffix="_intermediate")
+        self.filepath = intermediate_path  # point everything to this file
+
+        # Step 3: Patch footnotes.xml inside the ZIP
+        if self.footnote_changes:
+            self._edit_footnote_texts()
+        
+        self.edited_document = docx.Document(intermediate_path)
+ 
+    def _save_edited_document(self, doc=None, suffix="_edited"):
+        base, ext = os.path.splitext(self.filepath)
+        output_path = f"{base}{suffix}{ext}"
+        doc = doc or self.edited_document
+        doc.save(output_path)
+        self.logger.info(f"💾 Saved: {output_path}")
+        return output_path
 
     def save_edited_document(self, output_path=None):
 
@@ -94,69 +117,182 @@ class JBGDocumentEditor:
         return output_path
 
     def _edit_docx(self):
-        
-        doc = docx.Document(self.filepath)
-        self._apply_to_empty_paragraphs(doc)
-        
+        doc, elements = DocumentStructureExtractor._extract_docx_elements(self.filepath)
         applied_changes = set()
 
-        for idx, para in enumerate(doc.paragraphs):
-            para_index = idx + 1
-            paragraph_text = para.text
-
-            applicable_changes = [c for c in self.changes if c.get("paragraph") == para_index]
-            if not applicable_changes:
-                continue
-
-            rebuilt = []
-            applied = False
-
-            for change in applicable_changes:
-                old, new = change["old"], change["new"]
-                if self._normalize_text(old) in self._normalize_text(paragraph_text):
-                    diffed = self._diff_words(old, new)
-                    rebuilt.extend(diffed)
-                    self.logger.info(f"✅ Applied: '{old}' → '{new}' in paragraph {para_index}")
-                    applied_changes.add((para_index, old))
-                    applied = True
-
-            if not applied:
-                continue
-
-            # Clear and rebuild paragraph
-            for _ in range(len(para.runs)):
-                para._element.remove(para.runs[0]._element)
-
-            for kind, val in rebuilt:
-                run = para.add_run(val)
-                if kind == "strike":
-                    run.font.strike = True
-                    run.font.color.rgb = RGBColor(255, 0, 0)
-                elif kind == "insert":
-                    run.font.color.rgb = RGBColor(0, 128, 0)
-                    if self.docx_mode == "tracked":
-                        run.font.underline = WD_UNDERLINE.SINGLE
-
-            # 🟡 Attach one motivating comment to the paragraph
-            if self.include_motivations:
-                for change in applicable_changes:
-                    if "motivation" in change:
-                        para.add_comment(
-                            text=change["motivation"],
-                            author="JBG klarspråkningstjänst",
-                            initials="JBG"
-                        )
-                        break
-
-
-        self._suggest_nearby_paragraphs(doc)
-        
         for change in self.changes:
-            key = (change.get("paragraph"), change.get("old"))
-            if key not in applied_changes:
-                self.logger.error(f"❌No match found for '{change['old']}' in paragraph {change['paragraph']}.")
+            element_id = change.get("element_id")
+            old = change.get("old")
+            new = change.get("new")
+            motivation = change.get("motivation")
+
+            if not element_id or element_id not in elements:
+                self.logger.warning(f"⚠️ Skipping change — unknown or missing element_id: {element_id}")
+                continue
+
+            element = elements[element_id]
+            if DEBUG: self.logger.debug(f" -- Considering element: {str(element)} with id {element_id}")
+
+            # Standard Word elements with .text and .runs
+            if hasattr(element, "text") and hasattr(element, "runs"):
+                if DEBUG: self.logger.debug(f" -- Element has text and runs attribute")
+                original_text = element.text  or ""
+                if not original_text and isinstance(element, etree._Element):
+                    original_text = self._get_joined_text_from_xml_element(element)
+                if DEBUG: self.logger.debug(f" -- Original text was: {original_text}")
+
+                normalized_old = self._normalize_text(old)
+                normalized_origin = self._normalize_text(original_text)
+                if normalized_old not in normalized_origin:
+                    self.logger.debug(f"⚠️ Not identical match for '{old}' and '{original_text}' in {element_id}")
+                    sim_score = fuzz.ratio(normalized_old, normalized_origin)
+                    self.logger.debug(f"⚠️ Comparison similarity score: {sim_score} %")
+                    if float(sim_score) < TEXT_SIM_SCORE_THRESHOLD:
+                        self.logger.error(f"❌ No enough match for '{old}' in {element_id} (fuzzy match similarity score: {sim_score}")
+                        continue
+                
+                # Build diff
+                diffed = self._diff_words(old, new)
+                
+                # Capture footnoteReferences before clearing runs
+                footnote_refs = []
+                for run in element.runs:
+                    xml_run = run._element
+                    if xml_run.find("w:footnoteReference", namespaces=self.nsmap) is not None:
+                        footnote_refs.append(deepcopy(xml_run))
+
+                # Clear runs
+                for _ in range(len(element.runs)):
+                    element._element.remove(element.runs[0]._element)
+
+                # Add formatted runs
+                for kind, val in diffed:
+                    run = element.add_run(val)
+                    if kind == "strike":
+                        run.font.strike = True
+                        run.font.color.rgb = RGBColor(255, 0, 0)
+                    elif kind == "insert":
+                        run.font.color.rgb = RGBColor(0, 128, 0)
+
+                # Rebuild footnote references
+                for ref in footnote_refs:
+                    element._element.append(ref)
+                
+                # Add motivation comment
+                if self.include_motivations and motivation:
+                    if "footer" in element_id or "header" in element_id:
+                        self.logger.warning(f"⚠️ Skipping comment for {element_id} (unsupported in header/footer)")
+                    else:
+                        try:
+                            element.add_comment(
+                                text=motivation,
+                                author="JBG klarspråkningstjänst",
+                                initials="JBG"
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Could not add comment to {element_id}: {e}")
+
+                applied_changes.add(element_id)
+                self.logger.info(f"✅ Applied: '{old}' → '{new}' in {element_id}")
+                continue
+            
+            # Handle table cells
+            elif isinstance(element, _Cell):
+                if DEBUG:
+                    self.logger.debug(f" -- Element is _Cell")
+                cell_handled = False
+
+                normalized_old = self._normalize_text(old)
+                normalized_cell = self._normalize_text(
+                    "\n".join(para.text.strip() for para in element.paragraphs)
+                )
+                sim_score = fuzz.ratio(normalized_old, normalized_cell)
+                self.logger.debug(f"⚠️ Comparison similarity score: {sim_score} %")
+
+                if float(sim_score) < TEXT_SIM_SCORE_THRESHOLD:
+                    self.logger.error(
+                        f"❌ Not enough match for '{old}' in {element_id} (fuzzy score: {sim_score})"
+                    )
+                    continue
+
+                old_lines = old.strip().splitlines()
+                new_lines = new.strip().splitlines()
+                paras = element.paragraphs
+
+                if len(old_lines) != len(paras):
+                    self.logger.warning(
+                        f"⚠️ Line count mismatch in {element_id}: {len(old_lines)} lines vs {len(paras)} paragraphs"
+                    )
+                else:
+                    for i, (para, old_line, new_line) in enumerate(zip(paras, old_lines, new_lines)):
+                        norm_old_line = self._normalize_text(old_line)
+                        norm_para_line = self._normalize_text(para.text)
+                        if norm_old_line in norm_para_line:
+                            self.logger.info(
+                                f"✅ Match: '{norm_old_line}' == '{norm_para_line}' in row {i} of Cell {element_id}"
+                            )
+                            diffed = self._diff_words(old_line, new_line)
+                            for _ in range(len(para.runs)):
+                                para._element.remove(para.runs[0]._element)
+                            for kind, val in diffed:
+                                run = para.add_run(val)
+                                if kind == "strike":
+                                    run.font.strike = True
+                                    run.font.color.rgb = RGBColor(255, 0, 0)
+                                elif kind == "insert":
+                                    run.font.color.rgb = RGBColor(0, 128, 0)
+                        else:
+                            self.logger.warning(
+                                f"⚠️ Could not match old line to paragraph {i+1} in {element_id}"
+                            )
+
+                    if self.include_motivations and motivation:
+                        try:
+                            paras[0].add_comment(
+                                text=motivation,
+                                author="JBG klarspråkningstjänst",
+                                initials="JBG",
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                f"⚠️ Could not add comment to first paragraph in table cell {element_id}: {e}"
+                            )
+
+                    applied_changes.add(element_id)
+                    self.logger.info(f"✅ Applied in table cell {element_id}")
+                    cell_handled = True
+
+                if not cell_handled:
+                    self.logger.error(f"❌ No match found in table cell {element_id}")
+
+                continue
+
+            # Handle raw XML elements that are footnotes
+            elif isinstance(element, etree._Element) and element_id.startswith("footnote"):
+                if DEBUG: self.logger.debug("-- Element is raw XML and footnote")
+
+                # Collect all footnote changes for later
+                self.footnote_changes.append({
+                    "element_id": element_id,
+                    "footnote_id": change.get("footnote_id"),
+                    "old": old,
+                    "new": new,
+                    "motivation": motivation
+                })
+                self.logger.info(f"Stored footnote '{element_id}' with new text '{new}' for later insertions")
+            
+            # Handle raw XML elements that are not footnotes (not supported)
+            else:
+                self.logger.warning(f"⚠️ Unsupported element type for {element_id}: {type(element)}")
+
+        # Final reporting (mninus footnotes)
+        for change in self.changes:
+            element_id = change.get("element_id")
+            if element_id not in applied_changes and not element_id.startswith("footnote"):
+                self.logger.error(f"❌ Change not applied: {change}")
 
         return doc
+
     
     def _diff_words(self, old, new):
         """
@@ -177,566 +313,94 @@ class JBGDocumentEditor:
 
         return result
     
-    def _suggest_nearby_paragraphs(self, doc):
-        total = len(doc.paragraphs)
-        for change in self.changes:
-            if "paragraph" in change:
-                para_num = change["paragraph"]
-                if not (1 <= para_num <= total):
-                    self.logger.warning(f"Warning: Paragraph {para_num} is out of range.")
-                    continue
-                expected_para = doc.paragraphs[para_num - 1].text
-                if change["old"] not in expected_para:
-                    for offset in [-2, -1, 1, 2]:
-                        alt_idx = para_num - 1 + offset
-                        if 0 <= alt_idx < total:
-                            if change["old"] in doc.paragraphs[alt_idx].text:
-                                self.logger.warning(f"Could not find '{change['old']}' in paragraph {para_num} — did you mean paragraph {alt_idx + 1}?")
-                                break
+    def _get_joined_text_from_xml_element(self, element):
+        texts = element.findall(".//w:t", namespaces=self.nsmap)
+        return "".join(t.text for t in texts if t.text)
 
-    def _apply_to_empty_paragraphs(self, doc):
-        for idx, para in enumerate(doc.paragraphs):
-            para_index = idx + 1
-            if para.text.strip() != "":
-                continue
-
-            for change in self.changes:
-                if not isinstance(change, dict):
-                    self.logger.error(f"Skipping invalid change (not a dict): {change}")
-                    continue
-                elif (
-                    change.get("paragraph") == para_index
-                    and change.get("old", "") == ""
-                    and change.get("new")
-                ):
-                    para.text = change["new"]
-                    self.logger.info(f"Filled empty paragraph {para_index} with: {change['new']}")
-
-    
-    def _edit_docx_tracked(self):
+    def _edit_footnote_texts(self):
         """
-        Applies simple markup first, saves to a temporary file,
-        then converts that markup to native tracked changes.
+        Reopens the saved .docx as a ZIP archive and directly patches footnotes.xml.
         """
-        # First, apply standard markup
-        self.edited_document = self._edit_docx()
+        if not self.footnote_changes:
+            self.logger.info("ℹ️ No footnote changes to apply.")
+            return
+        else:
+            self.logger.info(f"Considering {len(self.footnote_changes)} footnote changes...")
 
-        # Save the interim version to disk
-        temp_base, _ = os.path.splitext(self.filepath)
-        intermediate_path = f"{temp_base}_intermediate.docx"
-        self.edited_document.save(intermediate_path)
-        self.logger.info(f"📄 Saved intermediate docx with markup to: {intermediate_path}")
-
-        # Convert to tracked changes based on visual styles
-        tracked_doc_path = self._convert_markup_to_tracked(intermediate_path)
-        
-        # Check if the produced document is valid
-        self._validate_docx_integrity(os.path.dirname(tracked_doc_path))
-
-        # Re-open and return final document for saving
-        final_doc = docx.Document(tracked_doc_path)
-        return final_doc
-    
-    def _enable_tracked_changes_settings(self, settings_xml_path):
-       
-        import xml.etree.ElementTree as ET
-        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-        ET.register_namespace("w", ns["w"])
-
-        tree = ET.parse(settings_xml_path)
-        root = tree.getroot()
-
-        # Only add if not already present
-        if root.find("w:trackRevisions", namespaces=ns) is None:
-            track = ET.Element(f"{{{ns['w']}}}trackRevisions")
-            root.insert(0, track)
-            tree.write(settings_xml_path, xml_declaration=True, encoding="UTF-8")
-            self.logger.info("📌 Enabled <w:trackRevisions/> in settings.xml")
-
-    
-    def _convert_markup_to_tracked(self, input_docx_path):
-        """
-        Converts simple visual markups in a .docx file (like red strike/underline)
-        into native Word tracked changes using <w:del> and <w:ins>.
-        Returns the filepath of the modified document.
-        """
-        try:
-            temp_dir = mkdtemp()
-            tracked_docx_path = os.path.join(
-                temp_dir, os.path.basename(input_docx_path).replace("_intermediate", "_tracked")
-            )
-
-            with zipfile.ZipFile(input_docx_path, 'r') as zin:
+        with ZipFile(self.filepath, 'r') as zin:
+            with tempfile.TemporaryDirectory() as temp_dir:
                 zin.extractall(temp_dir)
-                
-            # Enable tracked changes in settings.xml
-            settings_path = os.path.join(temp_dir, "word", "settings.xml")
-            if os.path.exists(settings_path):
-                self._enable_tracked_changes_settings(settings_path)
-                
-            # Fix some problems with the comments
-            self._add_extended_comment_support(temp_dir)
+                footnote_path = os.path.join(temp_dir, "word", "footnotes.xml")
 
-            # Start working with the document!
-            document_xml_path = os.path.join(temp_dir, "word", "document.xml")
-            parser = etree.XMLParser(remove_blank_text=True)
+                if not os.path.exists(footnote_path):
+                    self.logger.warning("⚠️ footnotes.xml not found in document.")
+                    return
 
-            with open(document_xml_path, "rb") as f:
-                tree = etree.parse(f, parser)
+                parser = etree.XMLParser(ns_clean=True, recover=True)
+                tree = etree.parse(footnote_path, parser)
+                ns = self.nsmap
 
-            for run in tree.xpath("//w:r", namespaces=self.nsmap):
-                rpr = run.find("w:rPr", namespaces=self.nsmap)
-                if rpr is None:
-                    continue
+                for change in self.footnote_changes:
+                    element_id = change["element_id"]
+                    footnote_id = str(change["footnote_id"])
+                    old = change["old"]
+                    new = change["new"]
+                    self.logger.debug(f"Footnote {footnote_id} should have '{old}' replaced with '{new}'")
 
-                color = rpr.find("w:color", namespaces=self.nsmap)
-                strike = rpr.find("w:strike", namespaces=self.nsmap)
-                underline = rpr.find("w:u", namespaces=self.nsmap)
+                    xpath_expr = f".//w:footnote[@w:id='{footnote_id}']"
+                    matches = tree.xpath(xpath_expr, namespaces=ns)
 
-                color_val = color.get(f"{{{self.nsmap['w']}}}val") if color is not None else None
-                is_strike = strike is not None
-                is_underline = underline is not None
-
-                if color_val == "FF0000":
-                    if is_underline:
-                        result = self._handle_insertions_and_comments(run)
-                    elif is_strike:
-                        result = self._handle_deletions(run)
-                    if result == -1:
+                    if not matches:
+                        self.logger.warning(f"⚠️ Could not locate footnote ID {footnote_id} in XML.")
                         continue
+
+                    footnote_node = matches[0]
+                    text_nodes = footnote_node.xpath(".//w:t", namespaces=ns)
+                    full_text = ''.join(t.text or '' for t in text_nodes)
+
                     
-            # Write back modified XML
-            with open(document_xml_path, "wb") as f:
-                tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-
-            # 🧼 Optional: clean invalid tracked change leftovers
-            document_xml_path = os.path.join(temp_dir, "word", "document.xml")
-            self._sanitize_document_xml(document_xml_path)
-            self._cleanup_docx_metadata(temp_dir)
-            self._ensure_minimal_comments_xml(temp_dir)
-            self._rebuild_document_rels_if_invalid(temp_dir)
-            self._validate_docx_integrity(temp_dir)
-            self._ensure_minimal_comments_structure(temp_dir)
-            
-            # Zip back into a new docx
-            with zipfile.ZipFile(tracked_docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
-                for root, _, files in os.walk(temp_dir):
-                    for filename in files:
-                        filepath = os.path.join(root, filename)
-                        archive_name = os.path.relpath(filepath, temp_dir)
-                        zout.write(filepath, archive_name)
-
-            self.logger.info(f"🔁 Converted markup to tracked changes in: {tracked_docx_path}")
-            return tracked_docx_path
-
-        except Exception as ex:
-            self.logger.warning(f"🚧 Tracked changes generation not fully functioning yet: {ex}")
-            return input_docx_path
-    
-    def _handle_insertions_and_comments(self, run):
-        parent = run.getparent()
-        insertion_index = parent.index(run)
-
-        # Clone and clean run
-        run_copy = deepcopy(run)
-        comment_ref = run_copy.find("w:commentReference", namespaces=self.nsmap)
-        if comment_ref is not None:
-            run_copy.remove(comment_ref)
-
-        rpr_copy = run_copy.find("w:rPr", namespaces=self.nsmap)
-        if rpr_copy is not None:
-            rpr_copy.clear()
-        else:
-            etree.SubElement(run_copy, f"{{{self.nsmap['w']}}}rPr")
-
-        # Wrap in a tracked-change element
-        wrapper = etree.Element(f"{{{self.nsmap['w']}}}ins")
-        wrapper.set(f"{{{self.nsmap['w']}}}author", "JBG Klarspråkningstjänst")
-        wrapper.set(f"{{{self.nsmap['w']}}}date", datetime.now(timezone.utc).isoformat())
-
-        # Always wrap <w:r> inside <w:del> or <w:ins>
-        wrapper.append(run_copy)
-
-        # Replace run
-        parent.remove(run)
-        parent.insert(insertion_index, wrapper)
-
-        # Handle comment (only for insertions)
-        if comment_ref is not None and self.include_motivations:
-            comment_ref_run = etree.Element(f"{{{self.nsmap['w']}}}r")
-            comment_ref_run.append(deepcopy(comment_ref))
-            parent.insert(insertion_index + 1, comment_ref_run)
-            
-        return 0
-            
-    def _handle_deletions(self, run):
-
-        parent = run.getparent()  # Expected to be <w:p>
-        insertion_index = parent.index(run)
-
-        # Clone the run
-        run_copy = deepcopy(run)
-
-        # Remove commentReference if any
-        comment_ref = run_copy.find("w:commentReference", namespaces=self.nsmap)
-        if comment_ref is not None:
-            run_copy.remove(comment_ref)
-
-        # Clean formatting
-        rpr = run_copy.find("w:rPr", namespaces=self.nsmap)
-        if rpr is not None:
-            rpr.clear()
-        else:
-            etree.SubElement(run_copy, f"{{{self.nsmap['w']}}}rPr")
-
-        # Extract the <w:t>
-        text_elem = run_copy.find("w:t", namespaces=self.nsmap)
-        if text_elem is None:
-            return -1
-
-        text_value = text_elem.text or ""
-
-        # Create <w:delText> to replace <w:t>
-        del_text_elem = etree.Element(f"{{{self.nsmap['w']}}}delText")
-        del_text_elem.text = text_value
-        run_copy.remove(text_elem)
-        run_copy.append(del_text_elem)
-
-        # Wrap in <w:del>
-        del_tag = etree.Element(f"{{{self.nsmap['w']}}}del")
-        del_tag.set(f"{{{self.nsmap['w']}}}author", "JBG Klarspråkningstjänst")
-        del_tag.set(f"{{{self.nsmap['w']}}}date", datetime.now(timezone.utc).isoformat())
-        del_tag.set(f"{{{self.nsmap['w']}}}rsidDel", "00000000")
-        del_tag.append(run_copy)
-
-        # Ensure parent <w:p> has rsidDel too
-        if parent.tag.endswith("p") and f"{{{self.nsmap['w']}}}rsidDel" not in parent.attrib:
-            parent.set(f"{{{self.nsmap['w']}}}rsidDel", "00000000")
-
-        # Replace <w:r> with <w:del>
-        parent.remove(run)
-        parent.insert(insertion_index, del_tag)
-
-        return 0
-    
-    def _validate_docx_integrity(self, docx_unzipped_dir):
-        import xml.etree.ElementTree as ET
-        import os
-
-        ns = {
-            "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-            "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
-            "ct": "http://schemas.openxmlformats.org/package/2006/content-types"
-        }
-
-        # 0. Check that deletions are proper (they cause most problems)
-        document_path = os.path.join(docx_unzipped_dir, "word", "document.xml")
-        self._validate_deletion_structure(document_path)
-        
-        # 1. Extract all comment IDs from document.xml
-        doc_tree = ET.parse(document_path)
-        comment_refs = doc_tree.findall(".//w:commentReference", namespaces=ns)
-        comment_ids_in_doc = {int(c.attrib[f"{{{ns['w']}}}id"]) for c in comment_refs}
-
-        # Also check commentRangeStart and commentRangeEnd consistency
-        range_starts = doc_tree.findall(".//w:commentRangeStart", namespaces=ns)
-        range_ends = doc_tree.findall(".//w:commentRangeEnd", namespaces=ns)
-        range_start_ids = {int(r.attrib[f"{{{ns['w']}}}id"]) for r in range_starts}
-        range_end_ids = {int(r.attrib[f"{{{ns['w']}}}id"]) for r in range_ends}
-        if range_start_ids != range_end_ids:
-            raise Exception("❌ Comment range start/end IDs do not match.")
-
-        # 2. Load comments.xml and check IDs
-        comments_path = os.path.join(docx_unzipped_dir, "word", "comments.xml")
-        if not os.path.exists(comments_path):
-            raise Exception("❌ comments.xml is missing.")
-
-        comments_tree = ET.parse(comments_path)
-        comment_elems = comments_tree.findall(".//w:comment", namespaces=ns)
-        comment_ids_defined = {int(c.attrib[f"{{{ns['w']}}}id"]) for c in comment_elems}
-
-        # 3. Validate that every used ID is defined
-        undefined_ids = comment_ids_in_doc - comment_ids_defined
-        if undefined_ids:
-            raise Exception(f"❌ Undefined comment IDs found in document.xml: {undefined_ids}")
-
-        # 4. Check document.xml.rels for comment relationship
-        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
-        rels_tree = ET.parse(rels_path)
-        rels = rels_tree.findall(".//rel:Relationship", namespaces=ns)
-        comment_rels = [
-            r for r in rels
-            if r.attrib.get("Type") == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
-        ]
-        if self.include_motivations:
-            if not comment_rels:
-                raise Exception("❌ Missing relationship to comments.xml in document.xml.rels")
-        else:
-            self.logger.info("📝 Skipping comments.xml relationship validation (motivations not included).")
-
-        # 5. Check [Content_Types].xml
-        content_types_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
-        ct_tree = ET.parse(content_types_path)
-        overrides = ct_tree.findall(".//ct:Override", namespaces=ns)
-        if self.include_motivations:
-            if not any(o.attrib.get("PartName") == "/word/comments.xml" for o in overrides):
-                raise Exception("❌ Missing override for comments.xml in [Content_Types].xml")
-
-        if DEBUG:
-            unknown_tags = []
-            for elem in doc_tree.iter():
-                if not elem.tag.startswith(f"{{{ns['w']}}}"):
-                    unknown_tags.append(elem.tag)
-            if unknown_tags:
-                self.logger.warning(f"🔍 Found {len(unknown_tags)} unknown tags in document.xml.")
-                for tag in set(unknown_tags):
-                    self.logger.warning(f"⚠️ Unknown element tag: {tag}")
-
-        self.logger.info("✅ DOCX tracked-change integrity check passed.")
-
-    def _validate_deletion_structure(self, document_xml_path):
-
-        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-        parser = etree.XMLParser(remove_blank_text=True)
-        tree = etree.parse(document_xml_path, parser)
-        root = tree.getroot()
-
-        invalid_del_blocks = []
-
-        for del_elem in root.xpath(".//w:del", namespaces=ns):
-            parent = del_elem.getparent()
-            if parent.tag != f"{{{ns['w']}}}p":
-                invalid_del_blocks.append("Invalid placement (not inside <w:p>)")
-                continue
-
-            runs = del_elem.findall("w:r", namespaces=ns)
-            if not runs:
-                invalid_del_blocks.append("Missing <w:r> inside <w:del>")
-                continue
-
-            for run in runs:
-                if run.find("w:delText", namespaces=ns) is None:
-                    invalid_del_blocks.append("Missing <w:delText> inside <w:r> in <w:del>")
-
-        if invalid_del_blocks:
-            self.logger.warning(f"⚠️ Found {len(invalid_del_blocks)} invalid <w:del> structures.")
-            raise Exception("❌ Invalid <w:del> structures detected in document.xml.")
-
-        self.logger.info("✅ All <w:del> structures are valid (location + delText).")
-
-    def _sanitize_document_xml(self, document_xml_path):
-
-        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-
-        parser = etree.XMLParser(remove_blank_text=True)
-        tree = etree.parse(document_xml_path, parser)
-        root = tree.getroot()
-
-        modified = False
-
-        for del_elem in root.xpath(".//w:del", namespaces=ns):
-            for run in del_elem.xpath(".//w:r", namespaces=ns):
-                t = run.find("w:t", namespaces=ns)
-                if t is not None:
-                    # Convert to <w:delText>
-                    text_val = t.text or ""
-                    run.remove(t)
-                    del_text = etree.Element(f"{{{ns['w']}}}delText")
-                    del_text.text = text_val
-                    run.append(del_text)
-                    modified = True
-
-        # Remove empty <w:r> elements
-        for run in root.xpath("//w:r", namespaces=ns):
-            if len(run) == 0:
-                parent = run.getparent()
-                parent.remove(run)
-                modified = True
-                
-        # Log unknown attributes in <w:del>, <w:ins>
-        for elem in root.xpath(".//w:del | .//w:ins", namespaces=ns):
-            for attr in elem.attrib:
-                if not attr.startswith(f"{{{ns['w']}}}"):
-                    self.logger.warning(f"⚠️ Unexpected attribute in {elem.tag}: {attr}")
-
-        if modified:
-            with open(document_xml_path, "wb") as f:
-                tree.write(f, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-            self.logger.info("🧼 Sanitized document.xml for invalid <w:t> in <w:del> or empty runs.")
-
-    def _cleanup_docx_metadata(self, docx_unzipped_dir):
-        import xml.etree.ElementTree as ET
-
-        ns_ct = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
-        ns_rel = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
-
-        # 1. Clean [Content_Types].xml
-        ct_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
-        if os.path.exists(ct_path):
-            tree = ET.parse(ct_path)
-            root = tree.getroot()
-            removed = 0
-            for part in root.findall("ct:Override", namespaces=ns_ct):
-                name = part.attrib.get("PartName", "")
-                if "commentsExtended.xml" in name or "commentsIds.xml" in name:
-                    root.remove(part)
-                    removed += 1
-            if removed:
-                tree.write(ct_path, xml_declaration=True, encoding="utf-8")
-                self.logger.info(f"🧹 Removed {removed} ghost overrides from [Content_Types].xml")
-
-        # 2. Clean word/_rels/document.xml.rels
-        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
-        if os.path.exists(rels_path):
-            tree = ET.parse(rels_path)
-            root = tree.getroot()
-            removed = 0
-            for rel in root.findall("rel:Relationship", namespaces=ns_rel):
-                target = rel.attrib.get("Target", "")
-                if "commentsExtended.xml" in target or "commentsIds.xml" in target:
-                    root.remove(rel)
-                    removed += 1
-            if removed:
-                tree.write(rels_path, xml_declaration=True, encoding="utf-8")
-                self.logger.info(f"🧹 Removed {removed} ghost relationships from document.xml.rels")
-    
-    def _rebuild_document_rels_if_invalid(self, docx_unzipped_dir):
-        import os
-        from lxml import etree
-
-        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
-        os.makedirs(os.path.dirname(rels_path), exist_ok=True)
-
-        try:
-            parser = etree.XMLParser(remove_blank_text=True)
-            etree.parse(rels_path, parser)
-            self.logger.info("✅ document.xml.rels is valid.")
-        except Exception as ex:
-            self.logger.warning(f"⚠️ document.xml.rels missing or invalid, regenerating: {ex}")
-
-            nsmap = {None: "http://schemas.openxmlformats.org/package/2006/relationships"}
-            root = etree.Element("Relationships", nsmap=nsmap)
-
-            part_counter = 1
-
-            def add_rel(target, rtype):
-                nonlocal part_counter
-                if os.path.exists(os.path.join(docx_unzipped_dir, "word", target)):
-                    etree.SubElement(root, "Relationship", {
-                        "Id": f"rId{part_counter}",
-                        "Type": f"http://schemas.openxmlformats.org/officeDocument/2006/relationships/{rtype}",
-                        "Target": target
-                    })
-                    self.logger.info(f"🔗 Added relationship for: {target}")
-                    part_counter += 1
-
-            # Common Word document parts
-            if os.path.exists(os.path.join(docx_unzipped_dir, "word", "comments.xml")):
-                add_rel("comments.xml", "comments")            
-            add_rel("styles.xml", "styles")
-            add_rel("settings.xml", "settings")
-            add_rel("fontTable.xml", "fontTable")
-            add_rel("webSettings.xml", "webSettings")
-            add_rel("theme/theme1.xml", "theme")
-
-            tree = etree.ElementTree(root)
-            tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-
-            self.logger.info("🛠️ Rebuilt document.xml.rels with detected relationships.")
-    
-    def _ensure_minimal_comments_xml(self, docx_unzipped_dir):
-        from lxml import etree
-        import os
-
-        comments_path = os.path.join(docx_unzipped_dir, "word", "comments.xml")
-        if not os.path.exists(comments_path):
-            nsmap = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-            root = etree.Element(f"{{{nsmap['w']}}}comments", nsmap=nsmap)
-            tree = etree.ElementTree(root)
-
-            os.makedirs(os.path.dirname(comments_path), exist_ok=True)
-            tree.write(comments_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-            self.logger.info("🧾 Created minimal empty comments.xml as placeholder.")
-
-    def _ensure_minimal_comments_structure(self, docx_unzipped_dir):
-        """
-        Ensures that the comments.xml exists and is minimal (even if include_motivations=False),
-        and purges ghost references to removed or unused comment parts.
-        """
-        import os
-        from lxml import etree
-
-        ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-        ns_ct = "http://schemas.openxmlformats.org/package/2006/content-types"
-        ns_rel = "http://schemas.openxmlformats.org/package/2006/relationships"
-
-        # Ensure comments.xml exists (even if empty)
-        comments_path = os.path.join(docx_unzipped_dir, "word", "comments.xml")
-        if not os.path.exists(comments_path):
-            root = etree.Element(f"{{{ns_w}}}comments", nsmap={"w": ns_w})
-            tree = etree.ElementTree(root)
-            os.makedirs(os.path.dirname(comments_path), exist_ok=True)
-            tree.write(comments_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-            self.logger.info("🧾 Created fallback comments.xml")
-
-        # Remove unused references from [Content_Types].xml
-        ct_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
-        if os.path.exists(ct_path):
-            tree = etree.parse(ct_path)
-            root = tree.getroot()
-            for override in root.findall(f".//{{{ns_ct}}}Override"):
-                name = override.get("PartName", "")
-                if "commentsExtended.xml" in name or "commentsIds.xml" in name:
-                    root.remove(override)
-                    self.logger.info(f"🧹 Removed ghost content type: {name}")
-            tree.write(ct_path, pretty_print=True, xml_declaration=True, encoding="utf-8")
-
-        # Remove ghost relationships in document.xml.rels
-        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
-        if os.path.exists(rels_path):
-            tree = etree.parse(rels_path)
-            root = tree.getroot()
-            for rel in root.findall(f".//{{{ns_rel}}}Relationship"):
-                target = rel.get("Target", "")
-                if "commentsExtended.xml" in target or "commentsIds.xml" in target:
-                    root.remove(rel)
-                    self.logger.info(f"🧹 Removed ghost relationship: {target}")
-            tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="utf-8")
-
-    def _add_extended_comment_support(self, docx_unzipped_dir):
-        rels_path = os.path.join(docx_unzipped_dir, "word", "_rels", "document.xml.rels")
-        ct_path = os.path.join(docx_unzipped_dir, "[Content_Types].xml")
-
-        ns_rel = {"rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
-        ns_ct = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
-
-        # Add relationships
-        rel_tree = etree.parse(rels_path)
-        rel_root = rel_tree.getroot()
-        for target, rtype in [
-            ("commentsExtended.xml", "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"),
-            ("commentsIds.xml", "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds")
-        ]:
-            etree.SubElement(rel_root, "Relationship", {
-                "Id": f"rId{uuid.uuid4().hex[:8]}",
-                "Type": rtype,
-                "Target": target
-            })
-        rel_tree.write(rels_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-
-        # Add content types
-        ct_tree = etree.parse(ct_path)
-        ct_root = ct_tree.getroot()
-        for part_name, content_type in [
-            ("/word/commentsExtended.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"),
-            ("/word/commentsIds.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml")
-        ]:
-            etree.SubElement(ct_root, f"{{{ns_ct['ct']}}}Override", {
-                "PartName": part_name,
-                "ContentType": content_type
-            })
-        ct_tree.write(ct_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-
+                    normalized_old = self._normalize_text(old)
+                    normalized_origin = self._normalize_text(full_text)
+                    if normalized_old not in normalized_origin:
+                        self.logger.debug(f"⚠️ Could not find exact match for old text in footnote {element_id}:'{old}' and '{full_text}'")
+                        sim_score = fuzz.ratio(normalized_old, normalized_origin)
+                        self.logger.debug(f"⚠️ Comparison similarity score: {sim_score} %")
+                        if float(sim_score) < TEXT_SIM_SCORE_THRESHOLD:
+                            self.logger.error(f"❌ No enough match for '{old}' in {element_id} (fuzzy match similarity score: {sim_score}")
+                            continue
+
+                    # Apply naive replacement
+                    try:
+                        updated_text = full_text.replace(old, new)
+
+                        # Redistribute updated text into original <w:t> nodes
+                        remaining = updated_text
+                        for i, t in enumerate(text_nodes):
+                            original_len = len(t.text or "")
+                            if i < len(text_nodes) - 1:
+                                t.text = remaining[:original_len]
+                                remaining = remaining[original_len:]
+                            else:
+                                t.text = remaining
+
+                        self.logger.info(f"✅ Patched footnote {footnote_id}: '{old}' → '{new}'")
+
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to update footnote {footnote_id}: {e}")
+
+                # Write modified footnotes.xml back
+                with open(footnote_path, 'wb') as fout:
+                    tree.write(fout, pretty_print=True, xml_declaration=True, encoding='utf-8')
+
+                # Repackage the .docx
+                with ZipFile(self.filepath, 'w') as zout:
+                    for root, _, files in os.walk(temp_dir):
+                        for filename in files:
+                            file_path = os.path.join(root, filename)
+                            arc_path = os.path.relpath(file_path, temp_dir)
+                            zout.write(file_path, arc_path)
+
+                self.logger.info("📦 Updated .docx file with modified footnotes.")
     
     @staticmethod
     def _normalize_text(text):
@@ -771,8 +435,9 @@ class JBGDocumentEditor:
             target_line = change.get("line")
             page = doc[page_index]
 
-            # Get all text blocks on page, sorted top-down
-            blocks = sorted(page.get_text("blocks"), key=lambda b: -b[1])  # y1 descending
+            # Get all text blocks on page, sorted top→down.
+            # PyMuPDF coordinates increase downward, so smaller y means closer to the top.
+            blocks = sorted(page.get_text("blocks"), key=lambda b: b[1])  # y1 ascending (top→down)
             line_texts = [(i + 1, b, b[4].strip()) for i, b in enumerate(blocks) if b[4].strip()]
 
             match_found = False
@@ -791,7 +456,7 @@ class JBGDocumentEditor:
                                 else:
                                     highlight.set_info(content=f"{SUGGESTION}: {new}")
                         match_found = True
-                        self.logger.info(f"✅ Applied: '{old}' → '{new}' on page {page_index + 1}, line {target_line + 1}")
+                        self.logger.info(f"✅ Applied: '{old}' → '{new}' on page {page_index + 1}, line {target_line}")
                         break
 
                 # If not found, try nearby lines
@@ -835,7 +500,10 @@ class JBGDocumentEditor:
             existing = []
             to_remove = []
 
-            for annot in page.annots():
+            annots = page.annots()
+            if not annots:
+                continue
+            for annot in annots:
                 if annot.type[0] != 8:  # 8 = Highlight, 1 = FreeText
                     continue
 
@@ -859,29 +527,9 @@ class JBGDocumentEditor:
                 else:
                     existing.append((rect, content))
 
-                num_duplicates += len(to_remove)
+            num_duplicates += len(to_remove)
             for annot in to_remove:
                 page.delete_annot(annot)
 
         self.logger.info(f"Removed {num_duplicates} duplicate annotations.")
         return
-
-def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: python {os.path.basename(__file__)} <document_path> <changes_json_path>")
-        sys.exit(1)
-
-    doc_path = sys.argv[1]
-    changes_path = sys.argv[2]
-
-    try:
-        editor = JBGDocumentEditor(doc_path, changes_path)
-        editor.apply_changes()
-        output_path = editor.save_edited_document()
-        print(f"Document processed and saved to: {output_path}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-if __name__ == "__main__":
-    main()

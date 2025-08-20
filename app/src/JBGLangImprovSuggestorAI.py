@@ -74,7 +74,7 @@ class JBGLangImprovSuggestorAI:
         structure = self.json_structured_document
 
         if structure["type"] == "docx":
-            elements = structure["paragraphs"]
+            elements = structure["elements"]
         elif structure["type"] == "pdf":
             elements = [
                 {"page": page["page"], "line": line["line"], "text": line["text"]}
@@ -143,21 +143,30 @@ class JBGLangImprovSuggestorAI:
         
 def main():
     
-    if len(sys.argv) != 6:
-        print(f"Usage: python {os.path.basename(__file__)} <structure_file.json> <api_key> <model> <prompt_policy_file> <custom_addition_file>")
+    num_args = len(sys.argv)
+    if num_args < 6 or num_args > 7:
+        print(f"Usage: python {os.path.basename(__file__)} <structure_file.json> <api_key> <model> <temperature> <prompt_policy_file> <custom_addition_file>")
         sys.exit(1)
 
-    filepath = sys.argv[1]
-    api_key = sys.argv[2]
-    model = sys.argv[3]
-    policy_path = sys.argv[4]
-    custom_path = sys.argv[5]
+    
+    try:
+        filepath = sys.argv[1]
+        api_key = sys.argv[2]
+        model = sys.argv[3]
+        temperature = float(sys.argv[4])
+        policy_path = sys.argv[5]
+        if num_args > 6:
+            custom_path = sys.argv[6]
+        else:
+            custom_path = None
+    except Exception as ex:
+        print(f"Error on input arguments: {str(ex)}")
 
     # Load and merge prompts
     with open(policy_path, encoding="utf-8") as f:
         base_prompt = f.read().strip()
     full_prompt = base_prompt
-    if os.path.exists(custom_path):
+    if custom_path and os.path.exists(custom_path):
         with open(custom_path, encoding="utf-8") as f:
             custom = f.read().strip()
         full_prompt += "\n\n" + custom
@@ -170,7 +179,7 @@ def main():
     logger.handlers.clear()
     logger.addHandler(handler)
 
-    ai = JBGLangImprovSuggestorAI(api_key, model, full_prompt, logger)
+    ai = JBGLangImprovSuggestorAI(api_key, model, full_prompt, temperature, logger)
     ai.load_structure(filepath)
     ai.suggest_changes_token_aware_batching()
     ai.save_as_json()

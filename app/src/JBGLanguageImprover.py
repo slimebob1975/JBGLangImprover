@@ -1,10 +1,18 @@
 import os
 import sys
-from app.src.JBGDocumentStructureExtractor import DocumentStructureExtractor
-from app.src.JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
-from app.src.JBGSuperDocumentEditor import JBGSuperDocumentEditor
-from app.src.JBGDocumentEditor import JBGDocumentEditor
-from app.src.JBGDocxRepairer import AutoDocxRepairer
+try:
+    from app.src.JBGDocumentStructureExtractor import DocumentStructureExtractor
+    from app.src.JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
+    from app.src.JBGSuperDocumentEditor import JBGSuperDocumentEditor
+    from app.src.JBGDocumentEditor import JBGDocumentEditor
+    from app.src.JBGDocxRepairer import AutoDocxRepairer
+except ModuleNotFoundError as ex:
+    print(f"Some modules could not be imported: {str(ex)}")
+    from JBGDocumentStructureExtractor import DocumentStructureExtractor
+    from JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
+    from JBGSuperDocumentEditor import JBGSuperDocumentEditor
+    from JBGDocumentEditor import JBGDocumentEditor
+    from JBGDocxRepairer import AutoDocxRepairer
 
 import logging
 
@@ -42,7 +50,7 @@ class JBGLanguageImprover:
             output_path = editor.save_edited_document()
         except Exception as ex:
             self.logger.warning(f"⚠️ JBGSuperDocumentEditor failed: {str(ex)}. Using fallback implementation.")
-            editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.docx_mode, self.logger)
+            editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.logger)
             editor.apply_changes()
             output_path = editor.save_edited_document()
             

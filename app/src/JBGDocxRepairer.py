@@ -6,9 +6,16 @@ import zipfile
 from tempfile import mkdtemp
 from lxml import etree
 import shutil
-from app.src.JBGDocxInternalValidator import DocxInternalValidator
+from datetime import datetime, timezone
+import random
+
+try:
+    from app.src.JBGDocxInternalValidator import DocxInternalValidator
+except ModuleNotFoundError:
+    from JBGDocxInternalValidator import DocxInternalValidator
 
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 REQUIRED_STYLES = [
             ("Normal", "paragraph", "Normal", True),
             ("DefaultParagraphFont", "character", "Default Paragraph Font", False),
@@ -281,7 +288,7 @@ class DocxXmlRepairer:
         # Ensure only one relationship per type
         existing = [r.get("Target") for r in root.findall("rel:Relationship", namespaces=nsmap)]
         if "comments.xml" not in existing:
-            etree.SubElement(root, "Relationship", {
+            etree.SubElement(root, f"{{{REL_NS}}}Relationship", {
                 "Id": "rIdComments",
                 "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
                 "Target": "comments.xml"
@@ -291,7 +298,7 @@ class DocxXmlRepairer:
 
 
         if not any("comments.xml" in r.get("Target", "") for r in root.findall("rel:Relationship", namespaces=nsmap)):
-            etree.SubElement(root, "Relationship", {
+            etree.SubElement(root, f"{{{REL_NS}}}Relationship", {
                 "Id": "rIdComments",
                 "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
                 "Target": "comments.xml"
@@ -366,7 +373,7 @@ class DocxXmlRepairer:
             if target in existing_targets:
                 self.logger.info(f"🔗 Relationship for {target} already exists — skipped.")
             else:
-                etree.SubElement(root, "Relationship", {
+                etree.SubElement(root, f"{{{REL_NS}}}Relationship", {
                     "Id": rid,
                     "Type": rtype,
                     "Target": target

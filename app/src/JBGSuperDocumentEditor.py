@@ -2,16 +2,26 @@ import os
 import shutil
 import uuid
 import docx
-from app.src.JBGDocumentEditor import JBGDocumentEditor
-from app.src.JBGDocxRepairer import AutoDocxRepairer
-from app.src.JBGDocxInternalValidator import DocxInternalValidator
-from app.src.JBGDocxQualityChecker import JBGDocxQualityChecker
+try:
+    from app.src.JBGDocumentEditor import JBGDocumentEditor
+    from app.src.JBGDocxRepairer import AutoDocxRepairer
+    from app.src.JBGDocxInternalValidator import DocxInternalValidator
+    from app.src.JBGDocxQualityChecker import JBGDocxQualityChecker
+except ModuleNotFoundError as ex:
+    print(f"Some modules could not be imported: {str(ex)}")
+    from JBGDocumentEditor import JBGDocumentEditor
+    from JBGDocxRepairer import AutoDocxRepairer
+    from JBGDocxInternalValidator import DocxInternalValidator
+    from JBGDocxQualityChecker import JBGDocxQualityChecker
 from lxml import etree
 from tempfile import mkdtemp
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import uuid4
 import random
+import argparse
+import logging
+import sys
 
 DEBUG = True
 INTERNAL_REPAIR_ON = True
@@ -39,6 +49,7 @@ class JBGSuperDocumentEditor:
             raise ValueError("Unsupported file format")
 
     def apply_changes(self):
+        self.logger.debug(f"Calling apply changes to internal editor")
         return self.editor.apply_changes()
 
     def save_edited_document(self, output_path=None):
@@ -47,8 +58,7 @@ class JBGSuperDocumentEditor:
 
 class PDFDocumentEditor:
     def __init__(self, filepath, changes_path, include_motivations, logger):
-        from app.src.JBGDocumentEditor import JBGDocumentEditor  # reuse PDF logic from legacy class
-        self.editor = JBGDocumentEditor(filepath, changes_path, include_motivations, "simple", logger)
+        self.editor = JBGDocumentEditor(filepath, changes_path, include_motivations, logger)
 
     def apply_changes(self):
         self.editor.apply_changes()  # this populates edited_document
@@ -86,9 +96,11 @@ class DocxDocumentEditor:
 
 
 class DocxSimpleMarkupEditor(DocxDocumentEditor):
+    
     def apply_changes(self):
-        legacy = JBGDocumentEditor(self.temp_path, self.changes_path, self.include_motivations, "simple", self.logger)
-        self.doc = legacy._edit_docx()
+        legacy = JBGDocumentEditor(self.temp_path, self.changes_path, self.include_motivations, self.logger)
+        legacy.apply_changes()
+        self.doc = legacy.edited_document
         return self.doc
 
     def save(self, output_path=None):
@@ -105,8 +117,6 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
         interim_path = self.temp_path.replace(".docx", "_interim.docx")
         doc.save(interim_path)
 
-        #legacy = JBGDocumentEditor(interim_path, self.changes_path, self.include_motivations, "tracked", self.logger)
-        #final_path = legacy._convert_markup_to_tracked(interim_path)
         try:
             final_path = self._convert_markup_to_tracked(interim_path)
         except Exception as ex:
@@ -797,5 +807,54 @@ class DocxTrackedChangesEditor(DocxSimpleMarkupEditor):
 class EditorProcessingException(Exception):
     """Raised when the Super Editor fails and should defer to the legacy editor."""
     pass
+
+def setup_logger():
+    logger = logging.getLogger("JBGEditorCLI")
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    return logger
+
+def main():
+    parser = argparse.ArgumentParser(description="Apply language improvement suggestions to a Word or PDF document using JBGSuperDocumentEditor.")
+    
+    parser.add_argument("doc_path", help="Path to the original .docx or .pdf file")
+    parser.add_argument("suggestions_path", help="Path to JSON file containing suggestions (already generated)")
+    parser.add_argument("--mode", choices=["simple", "tracked"], default="simple", help="Mode for editing: 'simple' = visual markup, 'tracked' = Word tracked changes")
+    parser.add_argument("--motivate", action="store_true", help="Include motivations in comment bubbles")
+    parser.add_argument("--output", help="Optional path to save the edited document (default: append '_edited' to filename)")
+
+    args = parser.parse_args()
+    logger = setup_logger()
+
+    logger.info(f"📄 Input file: {args.doc_path}")
+    logger.info(f"📑 Suggestions JSON: {args.suggestions_path}")
+    logger.info(f"✏️ Edit mode: {args.mode}")
+    logger.info(f"💬 Include motivations: {args.motivate}")
+
+    try:
+        editor = JBGSuperDocumentEditor(
+            filepath=args.doc_path,
+            changes_path=args.suggestions_path,
+            include_motivations=args.motivate,
+            docx_mode=args.mode,
+            logger=logger
+        )
+
+        logger.info("🧠 Applying changes...")
+        editor.apply_changes()
+
+        logger.info("💾 Saving document...")
+        final_path = editor.save_edited_document(output_path=args.output)
+        logger.info(f"✅ Done! Edited file saved to: {final_path}")
+
+    except Exception as e:
+        logger.error(f"🛑 An error occurred: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
 
 
