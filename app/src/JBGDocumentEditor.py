@@ -152,20 +152,50 @@ class JBGDocumentEditor:
                         continue
                 
                 # Build diff
-                diffed = self._diff_words(old, new)
-                
-                # Capture footnoteReferences before clearing runs
-                footnote_refs = []
+                # Build a diff across the entire paragraph:
+                # baseline is the original paragraph text; updated is baseline with the FIRST
+                # occurrence of 'old' replaced by 'new' (with a whitespace-tolerant fallback).
+                baseline_text = original_text
+                updated_text = baseline_text
+                idx = baseline_text.find(old)
+                if idx != -1:
+                    updated_text = baseline_text[:idx] + (new or "") + baseline_text[idx + len(old):]
+                else:
+                    try:
+                        pattern = re.compile(r"\s+".join(map(re.escape, (old or "").split())), flags=re.UNICODE)
+                        updated_text, n = pattern.subn(new or "", baseline_text, count=1)
+                        if n == 0:
+                            # fallback keeps behavior pre-patch
+                            updated_text = new or ""
+                    except Exception:
+                        updated_text = baseline_text.replace(old or "", new or "", 1)
+                diffed = self._diff_words(baseline_text, updated_text)
+                # Capture footnoteReference runs together with their character positions
+                # measured against the plain paragraph text (without refs).
+                footnote_refs = []   # list[(offset_chars, run_xml)]
+                pos_cursor = 0
                 for run in element.runs:
                     xml_run = run._element
+                    run_text = run.text or ""
                     if xml_run.find("w:footnoteReference", namespaces=self.nsmap) is not None:
-                        footnote_refs.append(deepcopy(xml_run))
+                        footnote_refs.append((pos_cursor, deepcopy(xml_run)))
+                    # Only text contributes to the visible paragraph text length
+                    pos_cursor += len(run_text)
 
-                # Clear runs
+                # Clear original runs before rebuilding with markup.
+                # (We re-insert any captured footnoteReference elements at their original offsets.)
                 for _ in range(len(element.runs)):
                     element._element.remove(element.runs[0]._element)
+                
+                # Add formatted runs while re-inserting refs at their original baseline offsets.
+                # Keep a baseline counter (characters that existed in the original paragraph).
+                baseline_emitted = 0
+                ref_i = 0
+                total_refs = len(footnote_refs)
+                # Insert any refs recorded at offset 0 (before any characters)
+                while ref_i < total_refs and footnote_refs[ref_i][0] <= baseline_emitted:
+                    element._element.append(footnote_refs[ref_i][1]); ref_i += 1
 
-                # Add formatted runs
                 for kind, val in diffed:
                     run = element.add_run(val)
                     if kind == "strike":
@@ -173,10 +203,18 @@ class JBGDocumentEditor:
                         run.font.color.rgb = RGBColor(255, 0, 0)
                     elif kind == "insert":
                         run.font.color.rgb = RGBColor(0, 128, 0)
+                    # Advance baseline counter only for text that existed in the baseline
+                    if kind in ("text", "strike"):
+                        baseline_emitted += len(val)
+                    # Insert any refs whose baseline offset is now reached
+                    while ref_i < total_refs and footnote_refs[ref_i][0] <= baseline_emitted:
+                        element._element.append(footnote_refs[ref_i][1])
+                        ref_i += 1
 
-                # Rebuild footnote references
-                for ref in footnote_refs:
-                    element._element.append(ref)
+                # Append any refs that might remain
+                while ref_i < total_refs:
+                    element._element.append(footnote_refs[ref_i][1])
+                    ref_i += 1
                 
                 # Add motivation comment
                 if self.include_motivations and motivation:
@@ -321,6 +359,13 @@ class JBGDocumentEditor:
         """
         Reopens the saved .docx as a ZIP archive and directly patches footnotes.xml.
         """
+        # Local constants for relationships/content types
+        REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+        CT_NS  = "http://schemas.openxmlformats.org/package/2006/content-types"
+        W_NS   = self.nsmap["w"]
+        XML_NS = "http://www.w3.org/XML/1998/namespace"
+        def w(tag): return f"{{{W_NS}}}{tag}"
+
         if not self.footnote_changes:
             self.logger.info("ℹ️ No footnote changes to apply.")
             return
@@ -355,12 +400,13 @@ class JBGDocumentEditor:
                         continue
 
                     footnote_node = matches[0]
+                    
+                    # Gather original full text (for similarity check only)
                     text_nodes = footnote_node.xpath(".//w:t", namespaces=ns)
                     full_text = ''.join(t.text or '' for t in text_nodes)
 
-                    
-                    normalized_old = self._normalize_text(old)
-                    normalized_origin = self._normalize_text(full_text)
+                    normalized_old = self._normalize_text(old or "")
+                    normalized_origin = self._normalize_text(full_text or "")
                     if normalized_old not in normalized_origin:
                         self.logger.debug(f"⚠️ Could not find exact match for old text in footnote {element_id}:'{old}' and '{full_text}'")
                         sim_score = fuzz.ratio(normalized_old, normalized_origin)
@@ -369,24 +415,136 @@ class JBGDocumentEditor:
                             self.logger.error(f"❌ No enough match for '{old}' in {element_id} (fuzzy match similarity score: {sim_score}")
                             continue
 
-                    # Apply naive replacement
+                    # Build visual markup runs (strike/delete in red, insert in green)
+                    # similar to paragraph handling.
                     try:
-                        updated_text = full_text.replace(old, new)
+                        # Keep first paragraph's pPr if present
+                        first_p = footnote_node.find("w:p", namespaces=ns)
+                        saved_ppr = None
+                        if first_p is not None:
+                            saved_ppr = first_p.find("w:pPr", namespaces=ns)
+                            if saved_ppr is not None:
+                                saved_ppr = deepcopy(saved_ppr)
+                        preserved_ref_runs = []
+                        if first_p is not None:
+                            # capture the run with <w:footnoteRef/> (and one following spacer run if any)
+                            runs = list(first_p.findall("w:r", namespaces=ns))
+                            for idx_r, r in enumerate(runs):
+                                if r.find("w:footnoteRef", namespaces=ns) is not None:
+                                    preserved_ref_runs.append(deepcopy(r))
+                                    if idx_r + 1 < len(runs):
+                                        nxt = runs[idx_r + 1]
+                                        tspace = nxt.find("w:t", namespaces=ns)
+                                        if tspace is not None and (tspace.text or "")[:1] == " ":
+                                            preserved_ref_runs.append(deepcopy(nxt))
+                                    break
+                        # Replace all children of footnote with a single paragraph
+                        for child in list(footnote_node):
+                            footnote_node.remove(child)
+                        new_p = etree.SubElement(footnote_node, w("p"))
+                        if saved_ppr is not None:
+                            new_p.append(saved_ppr)
+                        # Re-append preserved reference runs first (keep the number/superscript)
+                        for pr in preserved_ref_runs:
+                            new_p.append(pr)
+                        if not preserved_ref_runs:
+                            # ensure a space between the auto number and content if no explicit spacer was preserved
+                            r_space = etree.SubElement(new_p, w("r"))
+                            t_space = etree.SubElement(r_space, w("t")); t_space.set(f"{{{XML_NS}}}space", "preserve"); t_space.text = " "
+                        # Produce runs from word diff
+                        diffed = self._diff_words(old or "", new or "")
+                        for kind, val in diffed:
+                            r = etree.SubElement(new_p, w("r"))
+                            rpr = etree.SubElement(r, w("rPr"))
+                            if kind == "strike":
+                                etree.SubElement(rpr, w("color"), {w("val"): "FF0000"})
+                                etree.SubElement(rpr, w("strike"))
+                            elif kind == "insert":
+                                etree.SubElement(rpr, w("color"), {w("val"): "008000"})
+                            t = etree.SubElement(r, w("t"))
+                            t.set(f"{{{XML_NS}}}space", "preserve")
+                            t.text = val
 
-                        # Redistribute updated text into original <w:t> nodes
-                        remaining = updated_text
-                        for i, t in enumerate(text_nodes):
-                            original_len = len(t.text or "")
-                            if i < len(text_nodes) - 1:
-                                t.text = remaining[:original_len]
-                                remaining = remaining[original_len:]
-                            else:
-                                t.text = remaining
-
-                        self.logger.info(f"✅ Patched footnote {footnote_id}: '{old}' → '{new}'")
-
+                        self.logger.info(f"✅ Marked up footnote {footnote_id}: '{old}' → '{new}'")
                     except Exception as e:
-                        self.logger.error(f"❌ Failed to update footnote {footnote_id}: {e}")
+                        self.logger.error(f"❌ Failed to rebuild runs for footnote {footnote_id}: {e}")
+                        continue
+
+                    # If motivation present, attach a comment to the footnote paragraph.
+                    motivation = change.get("motivation")
+                    if self.include_motivations and motivation:
+                        try:
+                            # Ensure comments.xml exists and return next comment id
+                            comments_path = os.path.join(temp_dir, "word", "comments.xml")
+                            os.makedirs(os.path.dirname(comments_path), exist_ok=True)
+                            if os.path.exists(comments_path):
+                                ctree = etree.parse(comments_path)
+                                croot = ctree.getroot()
+                            else:
+                                croot = etree.Element(w("comments"), nsmap={"w": W_NS})
+                                ctree = etree.ElementTree(croot)
+
+                            # Next numeric id
+                            existing_ids = [int(c.get(w("id"))) for c in croot.findall("w:comment", namespaces=ns) if c.get(w("id")) and c.get(w("id")).isdigit()]
+                            next_id = (max(existing_ids) + 1) if existing_ids else 1
+
+                            # Add the comment body
+                            cmt = etree.SubElement(croot, w("comment"), {
+                                w("id"): str(next_id),
+                                w("author"): "JBG klarspråkningstjänst",
+                                w("initials"): "JBG",
+                                w("date"): datetime.now(timezone.utc).isoformat()
+                            })
+                            cp = etree.SubElement(cmt, w("p"))
+                            cr = etree.SubElement(cp, w("r"))
+                            ct = etree.SubElement(cr, w("t"))
+                            ct.set(f"{{{XML_NS}}}space", "preserve")
+                            ct.text = motivation
+                            ctree.write(comments_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+                            # Ensure document.xml.rels has relationship to comments.xml
+                            rels_path = os.path.join(temp_dir, "word", "_rels", "document.xml.rels")
+                            if os.path.exists(rels_path):
+                                rtree = etree.parse(rels_path)
+                                rroot = rtree.getroot()
+                            else:
+                                os.makedirs(os.path.dirname(rels_path), exist_ok=True)
+                                rroot = etree.Element(f"{{{REL_NS}}}Relationships")
+                                rtree = etree.ElementTree(rroot)
+                            exists = any(rel.get("Target") == "comments.xml"
+                                         for rel in rroot.findall(f"{{{REL_NS}}}Relationship"))
+                            if not exists:
+                                etree.SubElement(rroot, f"{{{REL_NS}}}Relationship", {
+                                    "Id": "rIdComments",
+                                    "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+                                    "Target": "comments.xml"
+                                })
+                                rtree.write(rels_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+                            # Ensure content types override for comments.xml
+                            ct_path = os.path.join(temp_dir, "[Content_Types].xml")
+                            if os.path.exists(ct_path):
+                                cttree = etree.parse(ct_path)
+                                ctroot = cttree.getroot()
+                                overrides = ctroot.findall(f"{{{CT_NS}}}Override")
+                                partnames = {o.get("PartName") for o in overrides}
+                                if "/word/comments.xml" not in partnames:
+                                    etree.SubElement(ctroot, f"{{{CT_NS}}}Override", {
+                                        "PartName": "/word/comments.xml",
+                                        "ContentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
+                                    })
+                                    cttree.write(ct_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+
+                            # Insert a commentReference into the footnote paragraph
+                            # (after the markup runs we just built).
+                            last_p = footnote_node.find("w:p", namespaces=ns)
+                            if last_p is None:
+                                last_p = etree.SubElement(footnote_node, w("p"))
+                            crun = etree.SubElement(last_p, w("r"))
+                            etree.SubElement(crun, w("commentReference"), {w("id"): str(next_id)})
+                            self.logger.info(f"✅ Attached motivation as comment id={next_id} to footnote {footnote_id}")
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Could not attach motivation to footnote {footnote_id}: {e}")
 
                 # Write modified footnotes.xml back
                 with open(footnote_path, 'wb') as fout:
