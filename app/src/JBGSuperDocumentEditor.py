@@ -16,7 +16,7 @@ except ModuleNotFoundError as ex:
 from lxml import etree
 from tempfile import mkdtemp
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 import random
 import argparse

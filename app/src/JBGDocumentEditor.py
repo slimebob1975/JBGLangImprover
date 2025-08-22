@@ -357,209 +357,306 @@ class JBGDocumentEditor:
 
     def _edit_footnote_texts(self):
         """
-        Reopens the saved .docx as a ZIP archive and directly patches footnotes.xml.
+        Patchar word/footnotes.xml direkt i .docx (ZIP) och uppdaterar
+        word/document.xml så att ev. motivations-kommentarer ankeras vid
+        fotnotreferensen i brödtexten – placerad ett steg längre bort
+        från superskriptet när möjligt.
+
+        Strategi:
+        - För varje fotnot-ID i self.footnote_changes:
+            * Läs full baslinjetext i fotnoten
+            * Bygg om fotnoten:
+                - bevara ENDAST fotnotRef-run (själva markören)
+                - lägg till ett rent mellanslag (syntetiskt), inte en hel run
+                från originalet som råkar innehålla text
+                - röd/överstruken run = hela gamla texten
+                - grön run = hela nya texten
+            * Om motivation finns och self.include_motivations är True:
+                - säkerställ comments.xml, CT-override och rels
+                - lägg in kommentar med author/initials
+                - ankara <w:commentReference> efter fotnotsreferensen,
+                men helst efter nästa whitespace-run (ett steg längre bort)
         """
-        # Local constants for relationships/content types
+
+        import shutil
+        import zipfile
+        from copy import deepcopy
+        from datetime import datetime
+        from lxml import etree
+
+        # --- Namnrymder
+        ns = dict(self.nsmap or {})
+        W_NS   = ns.get("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
         REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+        ODT_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         CT_NS  = "http://schemas.openxmlformats.org/package/2006/content-types"
-        W_NS   = self.nsmap["w"]
         XML_NS = "http://www.w3.org/XML/1998/namespace"
+        ns.setdefault("w", W_NS)
+
         def w(tag): return f"{{{W_NS}}}{tag}"
 
-        if not self.footnote_changes:
-            self.logger.info("ℹ️ No footnote changes to apply.")
+        # --- Hjälpare för ZIP/bytes ---
+        def _read_member(zf, name):
+            try:
+                with zf.open(name) as f:
+                    return f.read()
+            except KeyError:
+                return None
+
+        def _rewrite_zip(src_zip_path, overrides: dict):
+            tmp_out = src_zip_path + ".tmp_edit_footnotes"
+            with zipfile.ZipFile(src_zip_path, "r") as zin, \
+                zipfile.ZipFile(tmp_out, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                names = set(zin.namelist())
+                for name in names:
+                    if name in overrides:
+                        continue
+                    zout.writestr(name, zin.read(name))
+                for name, data in overrides.items():
+                    zout.writestr(name, data)
+            shutil.move(tmp_out, src_zip_path)
+
+        if not getattr(self, "footnote_changes", None):
+            self.logger.info("No footnote changes to apply.")
             return
-        else:
-            self.logger.info(f"Considering {len(self.footnote_changes)} footnote changes...")
 
-        with ZipFile(self.filepath, 'r') as zin:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                zin.extractall(temp_dir)
-                footnote_path = os.path.join(temp_dir, "word", "footnotes.xml")
+        # --- Läs in nödvändiga delar
+        with zipfile.ZipFile(self.filepath, "r") as zin:
+            footnotes_xml = _read_member(zin, "word/footnotes.xml")
+            document_xml  = _read_member(zin, "word/document.xml")
+            rels_xml      = _read_member(zin, "word/_rels/document.xml.rels")
+            ctypes_xml    = _read_member(zin, "[Content_Types].xml")
+            comments_xml  = _read_member(zin, "word/comments.xml")
 
-                if not os.path.exists(footnote_path):
-                    self.logger.warning("⚠️ footnotes.xml not found in document.")
-                    return
+        if footnotes_xml is None:
+            self.logger.warning("word/footnotes.xml saknas – inga fotnoter att patcha.")
+            return
+        if document_xml is None or ctypes_xml is None:
+            self.logger.error("Nödvändiga delar saknas (document.xml eller [Content_Types].xml).")
+            return
+        if rels_xml is None:
+            # skapa minimalt rels-dokument om det saknas
+            rels_root = etree.Element(f"{{{REL_NS}}}Relationships", nsmap={None: REL_NS})
+            rels_xml = etree.tostring(etree.ElementTree(rels_root), xml_declaration=True, encoding="utf-8", standalone="yes")
 
-                parser = etree.XMLParser(ns_clean=True, recover=True)
-                tree = etree.parse(footnote_path, parser)
-                ns = self.nsmap
+        parser = etree.XMLParser(remove_blank_text=False, ns_clean=True, recover=True)
+        foot_tree = etree.fromstring(footnotes_xml, parser=parser)
+        doc_tree  = etree.fromstring(document_xml,  parser=parser)
+        rels_tree = etree.fromstring(rels_xml,      parser=parser)
+        ct_tree   = etree.fromstring(ctypes_xml,    parser=parser)
+        com_tree  = etree.fromstring(comments_xml,  parser=parser) if comments_xml is not None else None
 
-                for change in self.footnote_changes:
-                    element_id = change["element_id"]
-                    footnote_id = str(change["footnote_id"])
-                    old = change["old"]
-                    new = change["new"]
-                    self.logger.debug(f"Footnote {footnote_id} should have '{old}' replaced with '{new}'")
+        # --- Comments-stöd ---
+        def _ensure_comments_part():
+            nonlocal com_tree, rels_tree, ct_tree
+            changed_rels = False
+            changed_ct   = False
 
-                    xpath_expr = f".//w:footnote[@w:id='{footnote_id}']"
-                    matches = tree.xpath(xpath_expr, namespaces=ns)
+            if com_tree is None:
+                com_tree = etree.Element(w("comments"), nsmap={"w": W_NS})
 
-                    if not matches:
-                        self.logger.warning(f"⚠️ Could not locate footnote ID {footnote_id} in XML.")
-                        continue
+            # Content_Types override
+            has_override = any(
+                (ov.get("PartName") == "/word/comments.xml")
+                for ov in ct_tree.findall(f"{{{CT_NS}}}Override")
+            )
+            if not has_override:
+                new_ov = etree.SubElement(ct_tree, f"{{{CT_NS}}}Override")
+                new_ov.set("PartName", "/word/comments.xml")
+                new_ov.set("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml")
+                changed_ct = True
 
-                    footnote_node = matches[0]
-                    
-                    # Gather original full text (for similarity check only)
-                    text_nodes = footnote_node.xpath(".//w:t", namespaces=ns)
-                    full_text = ''.join(t.text or '' for t in text_nodes)
+            # Relationship till comments.xml
+            has_rel = any(
+                (rel.get("Type") == f"{ODT_REL_NS}/comments" and rel.get("Target") == "comments.xml")
+                for rel in rels_tree.findall(f"{{{REL_NS}}}Relationship")
+            )
+            if not has_rel:
+                existing_ids = {rel.get("Id") for rel in rels_tree.findall(f"{{{REL_NS}}}Relationship")}
+                i = 1
+                while f"rId{i}" in existing_ids:
+                    i += 1
+                new_rel = etree.SubElement(rels_tree, f"{{{REL_NS}}}Relationship")
+                new_rel.set("Id", f"rId{i}")
+                new_rel.set("Type", f"{ODT_REL_NS}/comments")
+                new_rel.set("Target", "comments.xml")
+                changed_rels = True
 
-                    normalized_old = self._normalize_text(old or "")
-                    normalized_origin = self._normalize_text(full_text or "")
-                    if normalized_old not in normalized_origin:
-                        self.logger.debug(f"⚠️ Could not find exact match for old text in footnote {element_id}:'{old}' and '{full_text}'")
-                        sim_score = fuzz.ratio(normalized_old, normalized_origin)
-                        self.logger.debug(f"⚠️ Comparison similarity score: {sim_score} %")
-                        if float(sim_score) < TEXT_SIM_SCORE_THRESHOLD:
-                            self.logger.error(f"❌ No enough match for '{old}' in {element_id} (fuzzy match similarity score: {sim_score}")
-                            continue
+            # Nästa comment-id
+            max_id = -1
+            for c in com_tree.findall(f".//{w('comment')}"):
+                try:
+                    cid = int(c.get(f"{{{W_NS}}}id"))
+                    if cid > max_id:
+                        max_id = cid
+                except Exception:
+                    pass
+            next_id = max_id + 1
+            return com_tree, next_id, changed_rels, changed_ct
 
-                    # Build visual markup runs (strike/delete in red, insert in green)
-                    # similar to paragraph handling.
-                    try:
-                        # Keep first paragraph's pPr if present
-                        first_p = footnote_node.find("w:p", namespaces=ns)
-                        saved_ppr = None
-                        if first_p is not None:
-                            saved_ppr = first_p.find("w:pPr", namespaces=ns)
-                            if saved_ppr is not None:
-                                saved_ppr = deepcopy(saved_ppr)
-                        preserved_ref_runs = []
-                        if first_p is not None:
-                            # capture the run with <w:footnoteRef/> (and one following spacer run if any)
-                            runs = list(first_p.findall("w:r", namespaces=ns))
-                            for idx_r, r in enumerate(runs):
-                                if r.find("w:footnoteRef", namespaces=ns) is not None:
-                                    preserved_ref_runs.append(deepcopy(r))
-                                    if idx_r + 1 < len(runs):
-                                        nxt = runs[idx_r + 1]
-                                        tspace = nxt.find("w:t", namespaces=ns)
-                                        if tspace is not None and (tspace.text or "")[:1] == " ":
-                                            preserved_ref_runs.append(deepcopy(nxt))
-                                    break
-                        # Replace all children of footnote with a single paragraph
-                        for child in list(footnote_node):
-                            footnote_node.remove(child)
-                        new_p = etree.SubElement(footnote_node, w("p"))
-                        if saved_ppr is not None:
-                            new_p.append(saved_ppr)
-                        # Re-append preserved reference runs first (keep the number/superscript)
-                        for pr in preserved_ref_runs:
-                            new_p.append(pr)
-                        if not preserved_ref_runs:
-                            # ensure a space between the auto number and content if no explicit spacer was preserved
-                            r_space = etree.SubElement(new_p, w("r"))
-                            t_space = etree.SubElement(r_space, w("t")); t_space.set(f"{{{XML_NS}}}space", "preserve"); t_space.text = " "
-                        # Produce runs from word diff
-                        diffed = self._diff_words(old or "", new or "")
-                        for kind, val in diffed:
-                            r = etree.SubElement(new_p, w("r"))
-                            rpr = etree.SubElement(r, w("rPr"))
-                            if kind == "strike":
-                                etree.SubElement(rpr, w("color"), {w("val"): "FF0000"})
-                                etree.SubElement(rpr, w("strike"))
-                            elif kind == "insert":
-                                etree.SubElement(rpr, w("color"), {w("val"): "008000"})
-                            t = etree.SubElement(r, w("t"))
-                            t.set(f"{{{XML_NS}}}space", "preserve")
-                            t.text = val
+        def _add_comment(comment_id: int, text: str):
+            c = etree.SubElement(com_tree, w("comment"))
+            c.set(f"{{{W_NS}}}id", str(comment_id))
+            # sätt avsändare/initialer och datum
+            c.set(f"{{{W_NS}}}author", "JBG klarspråkningstjänst")
+            c.set(f"{{{W_NS}}}initials", "JBG")
+            c.set(f"{{{W_NS}}}date", datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"))
 
-                        self.logger.info(f"✅ Marked up footnote {footnote_id}: '{old}' → '{new}'")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to rebuild runs for footnote {footnote_id}: {e}")
-                        continue
+            p = etree.SubElement(c, w("p"))
+            r = etree.SubElement(p, w("r"))
+            t = etree.SubElement(r, w("t"))
+            t.set(f"{{{XML_NS}}}space", "preserve")
+            t.text = text or ""
 
-                    # If motivation present, attach a comment to the footnote paragraph.
-                    motivation = change.get("motivation")
-                    if self.include_motivations and motivation:
-                        try:
-                            # Ensure comments.xml exists and return next comment id
-                            comments_path = os.path.join(temp_dir, "word", "comments.xml")
-                            os.makedirs(os.path.dirname(comments_path), exist_ok=True)
-                            if os.path.exists(comments_path):
-                                ctree = etree.parse(comments_path)
-                                croot = ctree.getroot()
-                            else:
-                                croot = etree.Element(w("comments"), nsmap={"w": W_NS})
-                                ctree = etree.ElementTree(croot)
+        def _is_whitespace_run(r):
+            t = r.find(w("t"))
+            if t is None or t.text is None:
+                return False
+            return t.text.strip("") == "" and len(t.text) > 0  # innehåller bara whitespace
 
-                            # Next numeric id
-                            existing_ids = [int(c.get(w("id"))) for c in croot.findall("w:comment", namespaces=ns) if c.get(w("id")) and c.get(w("id")).isdigit()]
-                            next_id = (max(existing_ids) + 1) if existing_ids else 1
+        def _insert_comment_reference_after_ref(footnote_id: str, comment_id: int):
+            """
+            Placera commentReference ett steg bort:
+            - om nästa syskon-run efter referensen är en ren whitespace-run,
+                lägg commentReference EFTER den runnen
+            - annars, om det finns en efterföljande run, lägg efter den
+            - annars efter referens-runnen
+            """
+            ref = doc_tree.find(f".//{w('footnoteReference')}[@{w('id')}='{footnote_id}']")
+            if ref is None:
+                self.logger.warning(f"Could not find footnoteReference id={footnote_id} in document.xml")
+                return False
 
-                            # Add the comment body
-                            cmt = etree.SubElement(croot, w("comment"), {
-                                w("id"): str(next_id),
-                                w("author"): "JBG klarspråkningstjänst",
-                                w("initials"): "JBG",
-                                w("date"): datetime.now(timezone.utc).isoformat()
-                            })
-                            cp = etree.SubElement(cmt, w("p"))
-                            cr = etree.SubElement(cp, w("r"))
-                            ct = etree.SubElement(cr, w("t"))
-                            ct.set(f"{{{XML_NS}}}space", "preserve")
-                            ct.text = motivation
-                            ctree.write(comments_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            # referensen ska ligga i en w:r
+            parent_r = ref.getparent()
+            if parent_r is None or parent_r.tag != w("r"):
+                parent = ref.getparent()
+                idx = parent.index(ref)
+                crun = etree.Element(w("r"))
+                etree.SubElement(crun, w("commentReference")).set(f"{{{W_NS}}}id", str(comment_id))
+                parent.insert(idx + 1, crun)
+                return True
 
-                            # Ensure document.xml.rels has relationship to comments.xml
-                            rels_path = os.path.join(temp_dir, "word", "_rels", "document.xml.rels")
-                            if os.path.exists(rels_path):
-                                rtree = etree.parse(rels_path)
-                                rroot = rtree.getroot()
-                            else:
-                                os.makedirs(os.path.dirname(rels_path), exist_ok=True)
-                                rroot = etree.Element(f"{{{REL_NS}}}Relationships")
-                                rtree = etree.ElementTree(rroot)
-                            exists = any(rel.get("Target") == "comments.xml"
-                                         for rel in rroot.findall(f"{{{REL_NS}}}Relationship"))
-                            if not exists:
-                                etree.SubElement(rroot, f"{{{REL_NS}}}Relationship", {
-                                    "Id": "rIdComments",
-                                    "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
-                                    "Target": "comments.xml"
-                                })
-                                rtree.write(rels_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            p = parent_r.getparent()
+            if p is None:
+                self.logger.warning("Unexpected XML around footnoteReference.")
+                return False
 
-                            # Ensure content types override for comments.xml
-                            ct_path = os.path.join(temp_dir, "[Content_Types].xml")
-                            if os.path.exists(ct_path):
-                                cttree = etree.parse(ct_path)
-                                ctroot = cttree.getroot()
-                                overrides = ctroot.findall(f"{{{CT_NS}}}Override")
-                                partnames = {o.get("PartName") for o in overrides}
-                                if "/word/comments.xml" not in partnames:
-                                    etree.SubElement(ctroot, f"{{{CT_NS}}}Override", {
-                                        "PartName": "/word/comments.xml",
-                                        "ContentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
-                                    })
-                                    cttree.write(ct_path, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+            # hitta infogningsindex
+            insert_after_index = p.index(parent_r)
 
-                            # Insert a commentReference into the footnote paragraph
-                            # (after the markup runs we just built).
-                            last_p = footnote_node.find("w:p", namespaces=ns)
-                            if last_p is None:
-                                last_p = etree.SubElement(footnote_node, w("p"))
-                            crun = etree.SubElement(last_p, w("r"))
-                            etree.SubElement(crun, w("commentReference"), {w("id"): str(next_id)})
-                            self.logger.info(f"✅ Attached motivation as comment id={next_id} to footnote {footnote_id}")
-                        except Exception as e:
-                            self.logger.warning(f"⚠️ Could not attach motivation to footnote {footnote_id}: {e}")
+            # om nästa syskon-run är whitespace, hoppa över den
+            if insert_after_index + 1 < len(p):
+                next_node = p[insert_after_index + 1]
+                if next_node.tag == w("r") and _is_whitespace_run(next_node):
+                    insert_after_index += 1
+                elif next_node.tag == w("r"):
+                    # om det inte är whitespace men finns – lägg efter den (ett steg längre bort)
+                    insert_after_index += 1
 
-                # Write modified footnotes.xml back
-                with open(footnote_path, 'wb') as fout:
-                    tree.write(fout, pretty_print=True, xml_declaration=True, encoding='utf-8')
+            crun = etree.Element(w("r"))
+            etree.SubElement(crun, w("commentReference")).set(f"{{{W_NS}}}id", str(comment_id))
+            p.insert(insert_after_index + 1, crun)
+            return True
 
-                # Repackage the .docx
-                with ZipFile(self.filepath, 'w') as zout:
-                    for root, _, files in os.walk(temp_dir):
-                        for filename in files:
-                            file_path = os.path.join(root, filename)
-                            arc_path = os.path.relpath(file_path, temp_dir)
-                            zout.write(file_path, arc_path)
+        # --- Patcha fotnoter
+        changes_applied = 0
+        for ch in (self.footnote_changes or []):
+            footnote_id = str(ch.get("footnote_id", "")).strip()
+            old_text    = ch.get("old") or ""
+            new_text    = ch.get("new") or ""
+            motivation  = ch.get("motivation")
 
-                self.logger.info("📦 Updated .docx file with modified footnotes.")
-    
+            if not footnote_id:
+                self.logger.warning("Skipping a footnote change without footnote_id.")
+                continue
+
+            fn = foot_tree.find(f".//{w('footnote')}[@{w('id')}='{footnote_id}']")
+            if fn is None:
+                self.logger.warning(f"Footnote id={footnote_id} not found in footnotes.xml")
+                continue
+
+            # Full baslinjetext (alla w:t)
+            baseline = "".join(t.text or "" for t in fn.findall(f".//{w('t')}"))
+
+            # Bevara endast fotnotRef-run från första paragrafen
+            first_p = fn.find(f".//{w('p')}")
+            saved_ppr = deepcopy(first_p.find(w("pPr"))) if first_p is not None else None
+
+            preserved_ref_run = None
+            if first_p is not None:
+                for r in first_p.findall(w("r")):
+                    if r.find(w("footnoteRef")) is not None:
+                        preserved_ref_run = deepcopy(r)
+                        break
+
+            # Töm hela fotnoten och bygg en (1) ny paragraf
+            for child in list(fn):
+                fn.remove(child)
+            new_p = etree.SubElement(fn, w("p"))
+            if saved_ppr is not None:
+                new_p.append(saved_ppr)
+
+            # Lägg tillbaka bara referens-runnen
+            if preserved_ref_run is not None:
+                new_p.append(preserved_ref_run)
+
+            # Lägg till ett syntetiskt mellanslag (run med " ")
+            r_space = etree.SubElement(new_p, w("r"))
+            t_space = etree.SubElement(r_space, w("t"))
+            t_space.set(f"{{{XML_NS}}}space", "preserve")
+            t_space.text = " "
+
+            # Rollback-1: hela gamla röd/strike + hela nya grön
+            def _add_run(text, *, red_strike=False, green=False):
+                r = etree.SubElement(new_p, w("r"))
+                rpr = etree.SubElement(r, w("rPr"))
+                if red_strike:
+                    etree.SubElement(rpr, w("color"), {f"{{{W_NS}}}val": "FF0000"})
+                    etree.SubElement(rpr, w("strike"))
+                if green:
+                    etree.SubElement(rpr, w("color"), {f"{{{W_NS}}}val": "008000"})
+                t = etree.SubElement(r, w("t"))
+                t.set(f"{{{XML_NS}}}space", "preserve")
+                t.text = text if text is not None else ""
+
+            _add_run(baseline, red_strike=True)
+            _add_run(new_text, green=True)
+
+            changes_applied += 1
+
+            # Kommentar/motivation
+            if self.include_motivations and motivation:
+                com_root, next_cid, rels_changed, ct_changed = _ensure_comments_part()
+                _add_comment(next_cid, str(motivation))
+                if _insert_comment_reference_after_ref(footnote_id, next_cid):
+                    self.logger.info(f"Anchored comment (id={next_cid}) near footnoteRef id={footnote_id}.")
+                else:
+                    self.logger.warning(f"Failed to anchor comment for footnoteRef id={footnote_id}.")
+
+        if changes_applied == 0:
+            self.logger.info("No matching footnotes were changed.")
+            return
+
+        # --- Skriv tillbaka
+        footnotes_out = etree.tostring(foot_tree, xml_declaration=True, encoding="utf-8", standalone="yes")
+        document_out  = etree.tostring(doc_tree,  xml_declaration=True, encoding="utf-8", standalone="yes")
+        rels_out      = etree.tostring(rels_tree, xml_declaration=True, encoding="utf-8", standalone="yes")
+        ctypes_out    = etree.tostring(ct_tree,   xml_declaration=True, encoding="utf-8", standalone="yes")
+        overrides = {
+            "word/footnotes.xml": footnotes_out,
+            "word/document.xml":  document_out,
+            "word/_rels/document.xml.rels": rels_out,
+            "[Content_Types].xml": ctypes_out,
+        }
+        if com_tree is not None:
+            comments_out = etree.tostring(com_tree, xml_declaration=True, encoding="utf-8", standalone="yes")
+            overrides["word/comments.xml"] = comments_out
+
+        _rewrite_zip(self.filepath, overrides)
+        self.logger.info(f"✅ Applied {changes_applied} footnote change(s) with safe whitespace handling and improved comment anchoring.")
+
+
     @staticmethod
     def _normalize_text(text):
         # Replace all whitespace (tabs, newlines, etc.) with single spaces
