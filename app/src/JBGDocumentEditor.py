@@ -251,57 +251,42 @@ class JBGDocumentEditor:
                     self.logger.error(
                         f"❌ Not enough match for '{old}' in {element_id} (fuzzy score: {sim_score})"
                     )
-                    continue
-
-                old_lines = old.strip().splitlines()
-                new_lines = new.strip().splitlines()
-                paras = element.paragraphs
-
-                if len(old_lines) != len(paras):
-                    self.logger.warning(
-                        f"⚠️ Line count mismatch in {element_id}: {len(old_lines)} lines vs {len(paras)} paragraphs"
-                    )
+                    self.failed_changes.append(change)
                 else:
-                    for i, (para, old_line, new_line) in enumerate(zip(paras, old_lines, new_lines)):
-                        norm_old_line = self._normalize_text(old_line)
-                        norm_para_line = self._normalize_text(para.text)
-                        if norm_old_line in norm_para_line:
-                            self.logger.info(
-                                f"✅ Match: '{norm_old_line}' == '{norm_para_line}' in row {i} of Cell {element_id}"
-                            )
-                            diffed = self._diff_words(old_line, new_line)
-                            for _ in range(len(para.runs)):
-                                para._element.remove(para.runs[0]._element)
-                            for kind, val in diffed:
-                                run = para.add_run(val)
-                                if kind == "strike":
-                                    run.font.strike = True
-                                    run.font.color.rgb = RGBColor(255, 0, 0)
-                                elif kind == "insert":
-                                    run.font.color.rgb = RGBColor(0, 128, 0)
-                        else:
-                            self.logger.warning(
-                                f"⚠️ Could not match old line to paragraph {i+1} in {element_id}"
-                            )
+                    if element.paragraphs:
+                        diffed = self._diff_words(old, new)
+                        para = element.paragraphs[0]
 
-                    if self.include_motivations and motivation:
-                        try:
-                            paras[0].add_comment(
-                                text=motivation,
-                                author="JBG klarspråkningstjänst",
-                                initials="JBG",
-                            )
-                        except Exception as e:
-                            self.logger.warning(
-                                f"⚠️ Could not add comment to first paragraph in table cell {element_id}: {e}"
-                            )
+                        # Clear and rebuild first paragraph
+                        for _ in range(len(para.runs)):
+                            para._element.remove(para.runs[0]._element)
+                        for kind, val in diffed:
+                            run = para.add_run(val)
+                            if kind == "strike":
+                                run.font.strike = True
+                                run.font.color.rgb = RGBColor(255, 0, 0)
+                            elif kind == "insert":
+                                run.font.color.rgb = RGBColor(0, 128, 0)
 
-                    applied_changes.add(element_id)
-                    self.logger.info(f"✅ Applied in table cell {element_id}")
-                    cell_handled = True
+                        if self.include_motivations and motivation:
+                            try:
+                                para.add_comment(
+                                    text=motivation,
+                                    author="JBG klarspråkningstjänst",
+                                    initials="JBG",
+                                )
+                            except Exception as e:
+                                self.logger.warning(
+                                    f"⚠️ Could not add comment to first paragraph in table cell {element_id}: {e}"
+                                )
+
+                        applied_changes.add(element_id)
+                        self.logger.info(f"✅ Applied in table cell {element_id}")
+                        cell_handled = True
 
                 if not cell_handled:
                     self.logger.error(f"❌ No match found in table cell {element_id}")
+                    self.failed_changes.append(change)
 
                 continue
 
