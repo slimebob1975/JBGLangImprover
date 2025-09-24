@@ -42,6 +42,7 @@ class JBGDocumentEditor:
         self.logger = logger
         self.include_motivations = include_motivations
         self.footnote_changes = []
+        self.textbox_changes = []
         self.ext = os.path.splitext(filepath)[1].lower()
         self.edited_document = None
         self.nsmap = NSMAP
@@ -80,6 +81,10 @@ class JBGDocumentEditor:
         # Step 3: Patch footnotes.xml inside the ZIP
         if self.footnote_changes:
             self._edit_footnote_texts()
+
+        # Steo 4: Patch textboxes in document.xml inside the ZIP
+        if self.textbox_changes:
+            self._edit_textbox_texts()
         
         self.edited_document = docx.Document(intermediate_path)
  
@@ -241,23 +246,59 @@ class JBGDocumentEditor:
                 cell_handled = False
 
                 normalized_old = self._normalize_text(old)
-                normalized_cell = self._normalize_text(
-                    "\n".join(para.text.strip() for para in element.paragraphs)
-                )
-                sim_score = fuzz.ratio(normalized_old, normalized_cell)
-                self.logger.debug(f"⚠️ Comparison similarity score: {sim_score} %")
 
-                if float(sim_score) < TEXT_SIM_SCORE_THRESHOLD:
-                    self.logger.error(
-                        f"❌ Not enough match for '{old}' in {element_id} (fuzzy score: {sim_score})"
-                    )
-                    self.failed_changes.append(change)
-                else:
-                    if element.paragraphs:
+                # Step 1: Try exact substring match per paragraph
+                for para in element.paragraphs:
+                    para_text = self._normalize_text(para.text or "")
+                    if normalized_old and normalized_old in para_text:
                         diffed = self._diff_words(old, new)
-                        para = element.paragraphs[0]
 
-                        # Clear and rebuild first paragraph
+                        # Clear this paragraph’s runs
+                        for _ in range(len(para.runs)):
+                            para._element.remove(para.runs[0]._element)
+
+                        # Rebuild with diff highlighting
+                        for kind, val in diffed:
+                            run = para.add_run(val)
+                            if kind == "strike":
+                                run.font.strike = True
+                                run.font.color.rgb = RGBColor(255, 0, 0)
+                            elif kind == "insert":
+                                run.font.color.rgb = RGBColor(0, 128, 0)
+
+                        if self.include_motivations and motivation:
+                            try:
+                                para.add_comment(
+                                    text=motivation,
+                                    author="JBG klarspråkningstjänst",
+                                    initials="JBG",
+                                )
+                            except Exception as e:
+                                self.logger.warning(
+                                    f"⚠️ Could not add comment in table cell {element_id}: {e}"
+                                )
+
+                        applied_changes.add(element_id)
+                        self.logger.info(f"✅ Applied in table cell {element_id} (exact match)")
+                        cell_handled = True
+                        break  # stop after first successful match
+
+                # Step 2: Fallback fuzzy match if no exact hit
+                if not cell_handled and element.paragraphs:
+                    normalized_cell = self._normalize_text(
+                        "\n".join(p.text.strip() for p in element.paragraphs)
+                    )
+                    sim_score = fuzz.ratio(normalized_old, normalized_cell)
+                    self.logger.debug(f"⚠️ Fallback similarity score: {sim_score} %")
+
+                    # Guard: avoid overwriting short/numeric content
+                    if normalized_old.isdigit() or len(normalized_old) < 4:
+                        self.logger.warning(
+                            f"❌ Ignoring short/numeric '{old}' in {element_id} (avoiding false match)"
+                        )
+                    elif sim_score >= TEXT_SIM_SCORE_THRESHOLD:
+                        para = element.paragraphs[0]
+                        diffed = self._diff_words(old, new)
                         for _ in range(len(para.runs)):
                             para._element.remove(para.runs[0]._element)
                         for kind, val in diffed:
@@ -277,18 +318,20 @@ class JBGDocumentEditor:
                                 )
                             except Exception as e:
                                 self.logger.warning(
-                                    f"⚠️ Could not add comment to first paragraph in table cell {element_id}: {e}"
+                                    f"⚠️ Could not add comment in table cell {element_id}: {e}"
                                 )
 
                         applied_changes.add(element_id)
-                        self.logger.info(f"✅ Applied in table cell {element_id}")
+                        self.logger.info(f"✅ Applied in table cell {element_id} (fuzzy match)")
                         cell_handled = True
 
+                # Step 3: Failure case
                 if not cell_handled:
                     self.logger.error(f"❌ No match found in table cell {element_id}")
                     self.failed_changes.append(change)
 
                 continue
+
 
             # Handle raw XML elements that are footnotes
             elif isinstance(element, etree._Element) and element_id.startswith("footnote"):
@@ -303,19 +346,32 @@ class JBGDocumentEditor:
                     "motivation": motivation
                 })
                 self.logger.info(f"Stored footnote '{element_id}' with new text '{new}' for later insertions")
+
+            # Handle raw XML elements that are textboxes
+            elif isinstance(element, etree._Element) and element_id.startswith("textbox"):
+                if DEBUG: self.logger.debug("-- Element is raw XML and textbox")
+
+                # Collect all footnote changes for later
+                self.textbox_changes.append({
+                    "element_id": element_id,
+                    "textbox_id": change.get("textbox_id"),
+                    "old": old,
+                    "new": new,
+                    "motivation": motivation
+                })
+                self.logger.info(f"Stored textbox '{element_id}' with new text '{new}' for later insertions")
             
-            # Handle raw XML elements that are not footnotes (not supported)
+            # Handle raw XML elements that are not footnotes nor textboxes(not supported)
             else:
                 self.logger.warning(f"⚠️ Unsupported element type for {element_id}: {type(element)}")
 
         # Final reporting (mninus footnotes)
         for change in self.changes:
             element_id = change.get("element_id")
-            if element_id not in applied_changes and not element_id.startswith("footnote"):
+            if element_id not in applied_changes and not element_id.startswith(("footnote", "textbox")):
                 self.logger.error(f"❌ Change not applied: {change}")
 
         return doc
-
     
     def _diff_words(self, old, new):
         """
@@ -641,11 +697,158 @@ class JBGDocumentEditor:
         _rewrite_zip(self.filepath, overrides)
         self.logger.info(f"✅ Applied {changes_applied} footnote change(s) with safe whitespace handling and improved comment anchoring.")
 
+    def _edit_textbox_texts(self):
+        """
+        Patchar word/document.xml för att uppdatera text i textboxes (<w:txbxContent>).
+        Strategi:
+        - För varje entry i self.textbox_changes:
+            * Loopa över alla textboxes i dokumentet
+            * Läs deras text och jämför mot 'old'
+            * Om match: bygg om runs i den textboxen med diff (strike/red och insert/green)
+        """
+        import shutil, zipfile
+        from lxml import etree
 
+        if not getattr(self, "textbox_changes", None):
+            self.logger.info("No textbox changes to apply.")
+            return
+
+        ns = dict(self.nsmap or {})
+        W_NS = ns.get("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+        ns.setdefault("w", W_NS)
+
+        def w(tag): 
+            return f"{{{W_NS}}}{tag}"
+
+        def _add_run(parent, text, *, red_strike=False, green=False):
+            """Helper: create <w:r><w:t> with optional formatting"""
+            r = etree.SubElement(parent, w("r"))
+            rpr = etree.SubElement(r, w("rPr"))
+            if red_strike:
+                etree.SubElement(rpr, w("color"), {f"{{{W_NS}}}val": "FF0000"})
+                etree.SubElement(rpr, w("strike"))
+            if green:
+                etree.SubElement(rpr, w("color"), {f"{{{W_NS}}}val": "008000"})
+            t = etree.SubElement(r, w("t"))
+            XML_NS = "http://www.w3.org/XML/1998/namespace"
+            t.set(f"{{{XML_NS}}}space", "preserve")
+            t.text = text if text is not None else ""
+
+
+        # --- Läs och patcha document.xml
+        with zipfile.ZipFile(self.filepath, "r") as zin:
+            document_xml = zin.read("word/document.xml")
+
+        parser = etree.XMLParser(remove_blank_text=False, ns_clean=True, recover=True)
+        doc_tree = etree.fromstring(document_xml, parser=parser)
+
+        changes_applied = 0
+        for ch in (self.textbox_changes or []):
+            old_text = ch.get("old") or ""
+            new_text = ch.get("new") or ""
+            motivation = ch.get("motivation")
+            element_id = ch.get("element_id")
+
+            norm_old = self._normalize_textbox_text(old_text)
+            if not norm_old:
+                continue
+
+            # Iterate over all textboxes in the document
+            found_box = False
+            for txbx in doc_tree.findall(".//w:txbxContent", namespaces=ns):
+                local_text_nodes = txbx.findall(".//w:t", namespaces=ns)
+                local_full_text = "".join(t.text or "" for t in local_text_nodes)
+                norm_local = self._normalize_textbox_text(local_full_text)
+
+                self.logger.debug(f"[Textbox {element_id}] normalized_old='{norm_old}', normalized_local='{norm_local}'"
+)
+                if norm_old not in norm_local:
+                    continue  # not this box, check next
+
+                # Found the correct textbox
+                diffed = self._diff_words(old_text, new_text)
+
+                # Clear old runs
+                for t in local_text_nodes:
+                    parent_r = t.getparent()
+                    if parent_r is not None:
+                        parent_p = parent_r.getparent()
+                        if parent_p is not None:
+                            parent_p.remove(parent_r)
+
+                # Ensure at least one paragraph
+                p = txbx.find("w:p", namespaces=ns)
+                if p is None:
+                    p = etree.SubElement(txbx, w("p"))
+
+                # Insert diffed runs
+                # enforce consistent order: strike (old) before insert (new)
+                buffered = []
+                for kind, val in diffed:
+                    if kind == "text":
+                        # flush any buffered strike+insert before continuing
+                        for bkind, bval in buffered:
+                            if bkind == "strike":
+                                _add_run(p, bval, red_strike=True)
+                            elif bkind == "insert":
+                                _add_run(p, bval, green=True)
+                        buffered.clear()
+                        _add_run(p, val)
+                    else:
+                        buffered.append((kind, val))
+
+                # flush any remaining at end
+                for bkind, bval in buffered:
+                    if bkind == "strike":
+                        _add_run(p, bval, red_strike=True)
+                    elif bkind == "insert":
+                        _add_run(p, bval, green=True)
+
+                if self.include_motivations and motivation:
+                    self.logger.info(f"ℹ️ Skipping comment insertion in textbox {element_id} (not implemented)")
+
+                self.logger.info(f"✅ Applied in textbox {element_id}")
+                changes_applied += 1
+                found_box = True
+                break  # stop after first matching textbox
+
+            if not found_box:
+                self.logger.warning(f"❌ No match for textbox {element_id}")
+
+        if changes_applied == 0:
+            self.logger.info("No matching textboxes were changed.")
+            return
+
+        # --- Skriv tillbaka document.xml
+        new_doc_xml = etree.tostring(doc_tree, xml_declaration=True, encoding="utf-8", standalone="yes")
+
+        tmp_out = self.filepath + ".tmp_edit_textboxes"
+        with zipfile.ZipFile(self.filepath, "r") as zin, \
+            zipfile.ZipFile(tmp_out, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == "word/document.xml":
+                    zout.writestr(item, new_doc_xml)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+
+        shutil.move(tmp_out, self.filepath)
+        self.logger.info(f"✅ Applied {changes_applied} textbox change(s).")
+
+    
     @staticmethod
     def _normalize_text(text):
         # Replace all whitespace (tabs, newlines, etc.) with single spaces
         return re.sub(r'\s+', ' ', text).strip()
+    
+    @staticmethod
+    def _normalize_textbox_text(text: str) -> str:
+            if not text:
+                return ""
+            # Remove all whitespace characters
+            s = re.sub(r"\s+", "", text)
+            # Normalize dashes
+            s = s.replace("–", "-").replace("—", "-")
+            return s.strip()
     
     @staticmethod
     def _clean_pdf_text(text):
