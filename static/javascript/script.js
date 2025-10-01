@@ -1,3 +1,10 @@
+fetch("/config")
+  .then(res => res.json())
+  .then(data => {
+    document.title = data.title;
+    document.getElementById("app-title").innerText = data.title;
+  });
+
 // Load saved API key from localStorage on page load
 document.addEventListener("DOMContentLoaded", () => {
     const savedKey = localStorage.getItem("openai_api_key");

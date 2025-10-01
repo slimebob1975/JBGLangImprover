@@ -1,7 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, Request, Form
+from fastapi import FastAPI, File, UploadFile, Request, Form, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from dotenv import load_dotenv
+from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import shutil
 import logging
@@ -117,6 +119,29 @@ templates = Jinja2Templates(directory="templates")
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+class FrameOptionsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        # Remove 'x-frame-options' if it exists (case-insensitive)
+        if "x-frame-options" in response.headers:
+            del response.headers["x-frame-options"]
+        # Allow embedding from any origin (use with caution)
+        response.headers["Content-Security-Policy"] = f"frame-ancestors {FRAME_ANCESTORS}"    
+        return response
+
+# Allow embedding via iframes
+load_dotenv()
+FRAME_ANCESTORS = os.getenv("FRAME_ANCESTORS", "*")
+if not FRAME_ANCESTORS or FRAME_ANCESTORS == "*":
+    print("⚠️ Warning: Using default FRAME_ANCESTORS='*'. Set in .env (localhost) or Azure App Settings (deployed).")
+app.add_middleware(FrameOptionsMiddleware)
+
+@app.get("/config")
+def get_config():
+    title = os.getenv("APP_TITLE", "JBG Klarspråkning")
+    print(f" Appens titel: {title}")
+    return {"title": title}
 
 @app.get("/get_editable_prompt/")
 def get_editable_prompt():
