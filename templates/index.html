@@ -11,15 +11,16 @@
 <body>
     <div id="wrapper">
         <h1 name="app-title" id="app-title">JBG klarspråkning</h1>
-        <h3><em>Obs! Endast .docx- eller .pdf-filer</em></h3>
+        <h3><em>För .docx- eller .pdf-filer</em></h3>
         <form id="uploadForm">
-            <label for="documentFile"><strong>Välj dokument:</strong></label><br>
+            <label for="documentFile" title="Endast .pdf- och .docx-filer accepteras"><strong>Ladda upp din text:</strong></label><br>
             <input type="file" id="documentFile" name="file" accept=".pdf,.docx" required><br><br>
           
-            <label for="apiKey"><strong>OpenAI API-nyckel:</strong></label><br>
+            <label><strong>Inställningar för språkmodellen</strong></label>
+            <label for="apiKey" title="API-nyckeln är en form av lösenord som du får av lokalsamordnaren">Skriv in din OpenAI API-nyckel:</label><br>
             <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required><br><br>
           
-            <label for="model"><strong>Välj modell:</strong></label><br>
+            <label for="model" title="Nyare modeller är bättre men dyrare att använda">Välj språkmodell för granskningen:</label><br>
             <select id="model" name="model">
                 <option value="gpt-5">gpt-5 - Nyaste modellen, bäst men dyrare</option>
                 <option value="gpt-5-mini">gpt-5-mini - Ny, medeldyr variant av gpt-5</option>
@@ -29,37 +30,37 @@
                 <option value="gpt-3.5-turbo">gpt-3.5-turbo – Snabbast och billigast, men mindre exakt</option>
             </select><br><br>
           
-            <label for="editablePrompt"><strong>Anpassa promptsinstruktioner:</strong></label><br>
+            <label for="editablePrompt" title="Om du vill ge särskilda instruktioner till språkmodellen, kan du ändra den här standardtexten.">Anpassa promptsinstruktionen:</label><br>
             <textarea id="editablePrompt" name="editablePrompt" rows="10" placeholder="Laddar policy..." required></textarea><br><br>
 
             <!-- Temperature Checkbox and Slider -->
             <div>
-                <label for="temperature"><strong>Ange kreativitetsnivå (0 = låg, 1 = hög):</strong></label>
+                <label for="temperature" title="Kreativiteten styr hur förutsägbart språkmodellen uppför sig. Låg kreativitet ger hög förutsägbarhet, och tvärtom. (0 = lågt värde, 1 = högt värde)">Välj låg eller hög kreativitet i språkgranskningen:</label>
                 <div class="form-inline">
                     <input type="range" id="temperature" name="temperature" min="0" max="1" step="0.01" value="0.7">
                     <span id="tempDisplay">0.7</span>
                 </div>
             </div>
-
+            <label><strong>Hur ska resultatet se ut?</strong></label>
             <div class="form-inline">
-                <label for="includeMotivations"><strong>Motivera förändringsförslag:</strong></label>
+                <label for="includeMotivations" title="Språkmodellen genererar motiveringar till förändringsförslagen, och dessa läggs som kommentarer i dokumentet">Lägg till kommentarer till förändringsförslagen:</label>
                 <input type="checkbox" id="includeMotivations" name="includeMotivations" checked>
             </div>
 
             <!-- DOCX Markup Mode -->
             <div>
-                <label><strong>Visa förändringsförslag i .docx-filer med:</strong></label>
+                <label>Visa förslag till förändringarna i .docx-filer som:</label>
                 <div class="form-inline">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
-                    <label for="simpleMarking">Enkel färgmarkering</label>
+                    <label for="simpleMarking" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">Enkel färgmarkering</label>
 
                     <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
-                    <label for="trackedChanges">Spåra ändringar (beta)</label>
+                    <label for="trackedChanges" title="Använd Word-inställningen 'Spåra ändringar'">Spåra ändringar (beta)</label>
                 </div>
             </div>
 
             <!-- The start button!!! -->
-            <button type="submit">Klarspråka!</button>
+            <button type="submit" title="Börja din språkgranskning!">Starta</button>
         </form>
         <!-- A spinner that spins while executing -->
         <div id="spinner-container">

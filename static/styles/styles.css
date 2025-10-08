@@ -63,7 +63,7 @@ form {
 }
 
 form label {
-    font-weight: bold;
+    font-weight: plain;
     display: block;
     margin-top: 10px;
     margin-bottom: 5px;
