@@ -6,6 +6,7 @@
  
 ## Planned improvments
 - [ ] Keep all formating when replacing cell text in tables in docx-mode
+- [ ] Let all analysis options be in a list instead of separate checkboxes
 
 ## Solved
 - [x] Issue 1
