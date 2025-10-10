@@ -50,7 +50,7 @@
             <!-- DOCX Markup Mode -->
             <div>
                 <label>Visa förslag till förändringarna i .docx-filer som:</label>
-                <div class="form-inline">
+                <div class="form-inline" id="doxcModeRadioButtons" name="doxcModeRadioButtons">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
                     <label for="simpleMarking" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">Enkel färgmarkering</label>
 
@@ -60,7 +60,7 @@
             </div>
 
             <!-- The start button!!! -->
-            <button type="submit" title="Börja din språkgranskning!">Starta</button>
+            <button id="button" name="button" type="submit" title="Börja din språkgranskning!">Starta</button>
         </form>
         <!-- A spinner that spins while executing -->
         <div id="spinner-container">

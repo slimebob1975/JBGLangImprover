@@ -85,6 +85,17 @@ const temperature = parseFloat(document.getElementById("temperature").value);
 const includeMotivations = document.getElementById("includeMotivations").checked;
 const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
 
+// Lock all elements on page
+document.getElementById("documentFile").disabled = true;
+document.getElementById("apiKey").disabled = true;
+document.getElementById("model").disabled = true;
+document.getElementById("editablePrompt").disabled = true;
+document.getElementById("temperature").disabled = true;
+document.getElementById("includeMotivations").disabled = true;
+document.getElementById("doxcModeRadioButtons").disabled = true;
+document.getElementById("button").disabled = true;
+
+
 const status = document.getElementById("status");
 const spinner = document.getElementById("spinner-container");
 

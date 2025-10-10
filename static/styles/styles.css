@@ -117,6 +117,24 @@ form button:hover {
     box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
 
+/* === Inaktiverad knapp === */
+button:disabled,
+button[disabled],
+form button:disabled {
+    background-color: #99b7d3;  /* Ljusare version av IAF-blå (#005293) */
+    color: #e6e6e6;             /* Ljusgrå text för låg kontrast */
+    border: none;
+    cursor: not-allowed;        /* Standard för inaktiva kontroller */
+    opacity: 0.7;               /* Visuell avtoning */
+    box-shadow: none;           /* Ingen skugga för neutral känsla */
+}
+
+button:disabled:hover,
+form button:disabled:hover {
+    background-color: #99b7d3;  /* Samma färg vid hover för konsekvens */
+    box-shadow: none;
+}
+
 /* === Statusmeddelanden === */
 #status {
     font-weight: bold;
