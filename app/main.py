@@ -1,15 +1,16 @@
-from fastapi import FastAPI, File, UploadFile, Request, Form, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, File, UploadFile, Request, Form, Response, BackgroundTasks
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
-import os
+import os, sys
 import shutil
 import logging
 from datetime import datetime
 import time
 from app.src.JBGLanguageImprover import JBGLanguageImprover
+import uuid
 
 KEEP_FILES_DAYS = 0
 KEEP_FILES_HOURS = 1
@@ -35,20 +36,17 @@ def clean_old_files(directory, logger, max_age_days=KEEP_FILES_DAYS, max_age_hou
         logger.info(f"🧼 Upload cleanup completed: {num_old_files_deleted} files deleted.")
 
 def setup_run_logger(log_path):
-    
     logger = logging.getLogger(f"run-{log_path}")
     logger.setLevel(logging.DEBUG)
-    logger.propagate = False  # 🔴 Prevent duplicate output from parent loggers
-
-    # Clear any previous handlers for safety
+    logger.propagate = False
     logger.handlers.clear()
 
-    # File handler for this run
+    # File
     file_handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-    # Console handler
-    console_handler = logging.StreamHandler()
+    # Console (stdout)
+    console_handler = logging.StreamHandler(sys.stdout)  # <== explicitly stdout
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
     logger.addHandler(file_handler)
@@ -111,6 +109,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Mount static folders
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -149,7 +149,80 @@ def get_editable_prompt():
     return {"editable_prompt": editable_part}
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    api_key: str = Form(...),
+    model: str = Form(...),
+    editable_prompt: str = Form(""),
+    temperature: float = Form(0.7),
+    include_motivations: bool = Form(True),
+    docx_mode: str = Form("simple")
+):
+    # Generate job ID and paths
+    job_id = str(uuid.uuid4())
+    input_path = os.path.join(UPLOAD_DIR, job_id + "_" + file.filename)
+    output_path = os.path.join(RESULTS_DIR, f"{job_id}.result.docx")
+    log_path = os.path.join(LOG_DIR, f"{job_id}.log")
+
+    # Save uploaded file
+    with open(input_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Setup logger and cleanup old files
+    logger = setup_run_logger(log_path)
+    clean_old_files(UPLOAD_DIR, logger, max_age_days=0, max_age_hours=1)
+    clean_old_files(LOG_DIR, logger, max_age_days=30, max_age_hours=0)
+    clean_old_files(RESULTS_DIR, logger, max_age_days=0, max_age_hours=1)
+    logger.info(f"📥 Received file: {file.filename}")
+    logger.info(f"Saving to: {input_path}")
+    logger.info(f"🌡️ Temperature: {temperature}")
+    logger.info(f"💬 Include motivations: {include_motivations}")
+    logger.info(f"📝 DOCX markup mode: {docx_mode}")
+
+    # Extract prompt parts and validate
+    editable_part = editable_prompt.strip()
+    _, locked_before, locked_after = load_prompt_parts(os.path.join(BASE_DIR, "policy", "prompt_policy.md"))
+    full_prompt = f"{locked_before}\n\n{editable_part}\n\n{locked_after}"
+    validate_prompt(full_prompt)
+
+    # Background processing
+    def run_language_improvement():
+        improver = JBGLanguageImprover(
+            input_path=input_path,
+            api_key=api_key,
+            model=model,
+            prompt_policy=full_prompt,
+            temperature=temperature,
+            include_motivations=include_motivations,
+            docx_mode=docx_mode,
+            logger=logger
+        )
+        result = improver.run()
+        shutil.move(result, output_path)
+
+    background_tasks.add_task(run_language_improvement)
+
+    return JSONResponse({
+    "job_id": job_id,
+    "original_filename": file.filename
+})
+
+@app.get("/status/{job_id}")
+def check_status(job_id: str):
+    output_path = os.path.join(RESULTS_DIR, f"{job_id}.result.docx")
+    if os.path.exists(output_path):
+        return {"status": "complete"}
+    return {"status": "processing"}
+
+@app.get("/download/{job_id}")
+def download_result(job_id: str):
+    output_path = os.path.join(RESULTS_DIR, f"{job_id}.result.docx")
+    if not os.path.exists(output_path):
+        return {"error": "Result not found yet"}
+    return FileResponse(path=output_path, filename=f"{job_id}.docx", media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+async def upload_file_old(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
     editable_prompt: str = Form(""), temperature: float = Form(0.7), include_motivations: bool = Form(True), \
     docx_mode: str = Form("simple")):
     
@@ -168,7 +241,7 @@ async def upload_file(file: UploadFile = File(...), api_key: str = Form(...), mo
     clean_old_files(UPLOAD_DIR, logger, max_age_days=0, max_age_hours=1)
     clean_old_files(LOG_DIR, logger, max_age_days=7, max_age_hours=0)
     logger.info(f"📥 Received file: {file.filename}")
-    logging.info(f"Saving to: {input_path}")
+    logger.info(f"Saving to: {input_path}")
     logger.info(f"🌡️ Temperature: {temperature}")
     logger.info(f"💬 Include motivations: {include_motivations}")
     logger.info(f"📝 DOCX markup mode: {docx_mode}")

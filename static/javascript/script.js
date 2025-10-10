@@ -74,80 +74,186 @@ function applyTemperaturePolicy() {
 }
 
 document.getElementById("uploadForm").addEventListener("submit", async (e) => {
-e.preventDefault();
+    e.preventDefault();
 
-const fileInput = document.getElementById("documentFile");
-const file = fileInput.files[0];
-const apiKey = document.getElementById("apiKey").value.trim();
-const model = document.getElementById("model").value;
-const editablePrompt = document.getElementById("editablePrompt").value.trim();
-const temperature = parseFloat(document.getElementById("temperature").value);
-const includeMotivations = document.getElementById("includeMotivations").checked;
-const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
+    const fileInput = document.getElementById("documentFile");
+    const file = fileInput.files[0];
+    const apiKey = document.getElementById("apiKey").value.trim();
+    const model = document.getElementById("model").value;
+    const editablePrompt = document.getElementById("editablePrompt").value.trim();
+    const temperature = parseFloat(document.getElementById("temperature").value);
+    const includeMotivations = document.getElementById("includeMotivations").checked;
+    const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
 
-// Lock all elements on page
-document.getElementById("documentFile").disabled = true;
-document.getElementById("apiKey").disabled = true;
-document.getElementById("model").disabled = true;
-document.getElementById("editablePrompt").disabled = true;
-document.getElementById("temperature").disabled = true;
-document.getElementById("includeMotivations").disabled = true;
-document.getElementById("simpleMarking").disabled = true;
-document.getElementById("trackedChanges").disabled = true;
-document.getElementById("button").disabled = true;
+    if (!file || !apiKey) {
+        updateStatus("❌ Du måste välja en fil och ange din API-nyckel.", "status-error");
+        return;
+    }
 
+    lockUI();
+    updateStatus("🔄 Bearbetar dokument...", "status-info");
 
-const status = document.getElementById("status");
-const spinner = document.getElementById("spinner-container");
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("api_key", apiKey);
+    formData.append("model", model);
+    formData.append("editable_prompt", editablePrompt);
+    formData.append("temperature", temperature);
+    formData.append("include_motivations", includeMotivations);
+    formData.append("docx_mode", docxMode);
 
-if (!file || !apiKey) {
-    status.className = "status-error";
-    status.textContent = "❌ Du måste välja en fil och ange din API-nyckel.";
-    return;
-}
+    try {
+        const res = await fetch("/upload/", {
+            method: "POST",
+            body: formData
+        });
 
-status.className = "status-info";
-status.textContent = "🔄 Bearbetar dokument...";
-spinner.style.display = "block";
+        const { job_id, original_filename } = await res.json();
+        pollForResult(job_id, original_filename);
 
-const formData = new FormData();
-formData.append("file", file);
-formData.append("api_key", apiKey);
-formData.append("model", model);
-formData.append("editable_prompt", editablePrompt);
-formData.append("temperature", temperature);
-formData.append("include_motivations", includeMotivations);
-formData.append("docx_mode", docxMode);
-
-// Save the API key for future visits
-localStorage.setItem("openai_api_key", apiKey);
-
-try {
-    const response = await fetch("/upload/", {
-    method: "POST",
-    body: formData
-    });
-
-    if (!response.ok) throw new Error("Upload failed");
-
-    const blob = await response.blob();
-    const downloadUrl = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = downloadUrl;
-    a.download = file.name.replace(/\.[^.]+$/, "_klarspråkad" + file.name.slice(file.name.lastIndexOf(".")));
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(downloadUrl);
-
-    status.className = "status-success";
-    status.textContent = "✅ Färdig! Filen laddades ner.";
-} catch (err) {
-    console.error("Upload error:", err);
-    status.className = "status-error";
-    status.textContent = "❌ Tekniskt fel vid överföring.";
-} finally {
-    spinner.style.display = "none";
-}
+    } catch (err) {
+        console.error(err);
+        updateStatus("❌ Tekniskt fel vid överföring.", "status-error");
+    }
 });
-  
+
+async function pollForResult(jobId, originalFilename) {
+    const spinner = document.getElementById("spinner-container");
+    spinner.style.display = "block";
+
+    const status = document.getElementById("status");
+
+    const interval = setInterval(async () => {
+        console.log(`📡 Kollar status för job ID: ${jobId}...`);
+        try {
+            const res = await fetch(`/status/${jobId}`);
+            const data = await res.json();
+
+            if (data.status === "complete") {
+                console.log(`✅ Jobb ${jobId} är klart. Startar nedladdning.`);
+                clearInterval(interval);
+                downloadResult(jobId, originalFilename);
+            } else {
+                console.log(`⌛ Jobb ${jobId} är fortfarande under bearbetning...`);
+            }
+        } catch (err) {
+            console.warn(`⚠️ Misslyckades med att hämta status för ${jobId}:`, err);
+        }
+    }, 10000);  // Poll every 10 seconds
+}
+
+async function downloadResult(jobId, originalFilename) {
+    try {
+        const response = await fetch(`/download/${jobId}`);
+        const blob = await response.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+
+        const extension = originalFilename.slice(originalFilename.lastIndexOf("."));
+        const base = originalFilename.slice(0, originalFilename.lastIndexOf("."));
+        a.download = `${base}_klarspråkad${extension}`;
+
+        a.click();
+
+        updateStatus("✅ Färdig! Filen laddades ner.", "status-success");
+    } catch (err) {
+        console.error("Download failed:", err);
+        updateStatus("❌ Kunde inte hämta resultatfil.", "status-error");
+    } finally {
+        document.getElementById("spinner-container").style.display = "none";
+    }
+}
+
+function updateStatus(message, className) {
+    const status = document.getElementById("status");
+    status.className = className;
+    status.textContent = message;
+}
+
+function lockUI() {
+    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "simpleMarking", "trackedChanges", "button"];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = true;
+    });
+}
+
+
+document.getElementById("uploadForm").addEventListener("submit_old", async (e) => {
+    e.preventDefault();
+
+    const fileInput = document.getElementById("documentFile");
+    const file = fileInput.files[0];
+    const apiKey = document.getElementById("apiKey").value.trim();
+    const model = document.getElementById("model").value;
+    const editablePrompt = document.getElementById("editablePrompt").value.trim();
+    const temperature = parseFloat(document.getElementById("temperature").value);
+    const includeMotivations = document.getElementById("includeMotivations").checked;
+    const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
+
+    // Lock all elements on page
+    document.getElementById("documentFile").disabled = true;
+    document.getElementById("apiKey").disabled = true;
+    document.getElementById("model").disabled = true;
+    document.getElementById("editablePrompt").disabled = true;
+    document.getElementById("temperature").disabled = true;
+    document.getElementById("includeMotivations").disabled = true;
+    document.getElementById("simpleMarking").disabled = true;
+    document.getElementById("trackedChanges").disabled = true;
+    document.getElementById("button").disabled = true;
+
+
+    const status = document.getElementById("status");
+    const spinner = document.getElementById("spinner-container");
+
+    if (!file || !apiKey) {
+        status.className = "status-error";
+        status.textContent = "❌ Du måste välja en fil och ange din API-nyckel.";
+        return;
+    }
+
+    status.className = "status-info";
+    status.textContent = "🔄 Bearbetar dokument...";
+    spinner.style.display = "block";
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("api_key", apiKey);
+    formData.append("model", model);
+    formData.append("editable_prompt", editablePrompt);
+    formData.append("temperature", temperature);
+    formData.append("include_motivations", includeMotivations);
+    formData.append("docx_mode", docxMode);
+
+    // Save the API key for future visits
+    localStorage.setItem("openai_api_key", apiKey);
+
+    try {
+        const response = await fetch("/upload/", {
+        method: "POST",
+        body: formData
+        });
+
+        if (!response.ok) throw new Error("Upload failed");
+
+        const blob = await response.blob();
+        const downloadUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = file.name.replace(/\.[^.]+$/, "_klarspråkad" + file.name.slice(file.name.lastIndexOf(".")));
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(downloadUrl);
+
+        status.className = "status-success";
+        status.textContent = "✅ Färdig! Filen laddades ner.";
+    } catch (err) {
+        console.error("Upload error:", err);
+        status.className = "status-error";
+        status.textContent = "❌ Tekniskt fel vid överföring.";
+    } finally {
+        spinner.style.display = "none";
+    }
+});
+    
