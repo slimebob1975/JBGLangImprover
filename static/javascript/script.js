@@ -92,7 +92,8 @@ document.getElementById("model").disabled = true;
 document.getElementById("editablePrompt").disabled = true;
 document.getElementById("temperature").disabled = true;
 document.getElementById("includeMotivations").disabled = true;
-document.getElementById("doxcModeRadioButtons").disabled = true;
+document.getElementById("simpleMarking").disabled = true;
+document.getElementById("trackedChanges").disabled = true;
 document.getElementById("button").disabled = true;
 
 
