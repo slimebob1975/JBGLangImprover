@@ -112,6 +112,10 @@ os.makedirs(LOG_DIR, exist_ok=True)
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# In-memory job status store for language improvement jobs
+# job_id -> {"status": str, "done": bool, "error": Optional[str]}
+jobs_lang = {}
+
 # Mount static folders
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -165,6 +169,13 @@ async def upload_file(
     output_path = os.path.join(RESULTS_DIR, f"{job_id}.result.docx")
     log_path = os.path.join(LOG_DIR, f"{job_id}.log")
 
+     # Register job with initial status
+    jobs_lang[job_id] = {
+        "status": "Fil uppladdad. Bearbetar dokument...",
+        "done": False,
+        "error": None,
+    }
+
     # Save uploaded file
     with open(input_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -186,20 +197,41 @@ async def upload_file(
     full_prompt = f"{locked_before}\n\n{editable_part}\n\n{locked_after}"
     validate_prompt(full_prompt)
 
-    # Background processing
+        # Background processing
     def run_language_improvement():
-        improver = JBGLanguageImprover(
-            input_path=input_path,
-            api_key=api_key,
-            model=model,
-            prompt_policy=full_prompt,
-            temperature=temperature,
-            include_motivations=include_motivations,
-            docx_mode=docx_mode,
-            logger=logger
-        )
-        result = improver.run()
-        shutil.move(result, output_path)
+        def progress_callback(message: str):
+            job = jobs_lang.get(job_id)
+            if job is not None:
+                job["status"] = message
+
+        try:
+            improver = JBGLanguageImprover(
+                input_path=input_path,
+                api_key=api_key,
+                model=model,
+                prompt_policy=full_prompt,
+                temperature=temperature,
+                include_motivations=include_motivations,
+                docx_mode=docx_mode,
+                logger=logger,
+                progress_callback=progress_callback,
+            )
+            result = improver.run()
+            shutil.move(result, output_path)
+
+            job = jobs_lang.get(job_id)
+            if job is not None:
+                job["done"] = True
+                if not job.get("status"):
+                    job["status"] = "Språkgranskning klar."
+                job["error"] = None
+
+        except Exception as e:
+            logger.error(f"Language improvement error for job {job_id}: {e}")
+            job = jobs_lang.setdefault(job_id, {})
+            job["done"] = True
+            job["error"] = str(e)
+            job["status"] = "Ett fel uppstod vid språkgranskningen."
 
     background_tasks.add_task(run_language_improvement)
 
@@ -211,9 +243,64 @@ async def upload_file(
 @app.get("/status/{job_id}")
 def check_status(job_id: str):
     output_path = os.path.join(RESULTS_DIR, f"{job_id}.result.docx")
+    job = jobs_lang.get(job_id)
+
+    # If we know about the job, use that as source of truth
+    if job is not None:
+        # Error recorded
+        if job.get("error"):
+            return JSONResponse(
+                {
+                    "done": True,
+                    "status": job.get("status") or "Ett fel uppstod vid språkgranskningen.",
+                    "error": job["error"],
+                },
+                status_code=500,
+            )
+
+        # Not done yet
+        if not job.get("done"):
+            return JSONResponse(
+                {
+                    "done": False,
+                    "status": job.get("status") or "Bearbetar dokument...",
+                },
+                status_code=202,
+            )
+
+        # Done according to job state → we expect file to exist
+        if not os.path.exists(output_path):
+            return JSONResponse(
+                {
+                    "done": True,
+                    "status": "Jobbet är markerat som klart men resultatfilen saknas.",
+                    "error": "Result file missing",
+                },
+                status_code=500,
+            )
+
+        return {
+            "done": True,
+            "status": job.get("status") or "Språkgranskning klar.",
+        }
+
+    # If job is not in memory (e.g. another instance), fall back to file existence
+
     if os.path.exists(output_path):
-        return {"status": "complete"}
-    return {"status": "processing"}
+        return {
+            "done": True,
+            "status": "Språkgranskning klar.",
+        }
+
+    # No job and no file: assume processing (or very early state)
+    return JSONResponse(
+        {
+            "done": False,
+            "status": "Bearbetar dokument...",
+        },
+        status_code=202,
+    )
+
 
 @app.get("/download/{job_id}")
 def download_result(job_id: str):

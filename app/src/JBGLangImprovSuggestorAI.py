@@ -10,17 +10,25 @@ MAX_TOKEN_PER_CALL = 3000
 
 class JBGLangImprovSuggestorAI:
     
-    def __init__(self, api_key, model, prompt_policy, temperature, logger):
-        
+    def __init__(self, api_key, model, prompt_policy, temperature, logger, progress_callback=None):
         self.api_key = api_key
         self.model = model
         self.policy_prompt = prompt_policy
         self.temperature = temperature
         self.logger = logger
+        self.progress_callback = progress_callback
         self.file_path = None
         self.json_structured_document = None
         self.json_suggestions = None
         
+    def _report(self, message: str):
+        self.logger.info(message)
+        if self.progress_callback is not None:
+            try:
+                self.progress_callback(message)
+            except Exception as ex:
+                self.logger.warning(f"Progress callback failed in JBGLangImprovSuggestorAI: {ex}")
+    
     def load_structure(self, filepath):
         self.file_path = filepath
         self.json_structured_document = json.load(open(filepath, "r", encoding="utf-8"))
@@ -67,6 +75,7 @@ class JBGLangImprovSuggestorAI:
 
     def suggest_changes_token_aware_batching(self, max_tokens_per_call=MAX_TOKEN_PER_CALL):
         
+        self._report(f"Promptpolicyn laddad. Förbereder API-anrop...")
         self.logger.info(f"The used prompt policy:\n{str(self.policy_prompt)}\n\n")
         
         client = openai.OpenAI(api_key=self.api_key)
@@ -100,7 +109,9 @@ class JBGLangImprovSuggestorAI:
         if current_chunk:
             chunks.append(current_chunk)
 
-        self.logger.info(f"🔹 Sending {len(chunks)} separate API requests due to size.")
+        num_chunks = len(chunks)
+        self._report(f"🔹 Dokumentet är stort. Skickar {num_chunks} separata API-anrop.")
+
 
         all_suggestions = []
         first = True
@@ -111,6 +122,8 @@ class JBGLangImprovSuggestorAI:
                 time.sleep(5)
             else:
                 first = False
+
+            self._report(f"⚠️ Gör API-anrop {i+1} av {num_chunks}.")
                 
             user_prompt = f"Här är en del av dokumentet som ska granskas: {json.dumps(chunk, ensure_ascii=False)}"
             messages = [system_msg, {"role": "user", "content": user_prompt}]
@@ -125,10 +138,13 @@ class JBGLangImprovSuggestorAI:
                 cleaned = self._clean_json_response(suggestions)
                 parsed = json.loads(cleaned)
                 all_suggestions.extend(parsed)
-                self.logger.info(f"✅ Executed API requests #{i+1}.")
+                self._report(f"✅ Klar med API-anrop {i+1} av {num_chunks}.")
             except Exception as e:
-                self.logger.error(f"Error in chunk {i+1}: {e}")
+                msg = f"Fel i API-anrop {i+1} av {num_chunks}: {e}"
+                self.logger.error(msg)
+                self._report(msg)
 
+        self._report("🧠 Alla AI-förslag är genererade.")
         self.json_suggestions = all_suggestions
 
     

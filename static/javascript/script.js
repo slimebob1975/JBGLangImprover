@@ -121,25 +121,49 @@ async function pollForResult(jobId, originalFilename) {
     const spinner = document.getElementById("spinner-container");
     spinner.style.display = "block";
 
-    const status = document.getElementById("status");
-
     const interval = setInterval(async () => {
-        console.log(`📡 Kollar status för job ID: ${jobId}...`);
+        console.log(`Kollar status för job ID: ${jobId}...`);
         try {
             const res = await fetch(`/status/${jobId}`);
             const data = await res.json();
 
-            if (data.status === "complete") {
-                console.log(`✅ Jobb ${jobId} är klart. Startar nedladdning.`);
-                clearInterval(interval);
-                downloadResult(jobId, originalFilename);
-            } else {
-                console.log(`⌛ Jobb ${jobId} är fortfarande under bearbetning...`);
+            // Show status message if present
+            if (data.status) {
+                updateStatus(data.status, "status-info");
             }
+
+            // Error from server
+            if (data.error) {
+                clearInterval(interval);
+                console.warn(`Jobb ${jobId} rapporterade fel:`, data.error);
+                updateStatus(
+                    data.status || "Ett fel uppstod vid språkgranskningen.",
+                    "status-error"
+                );
+                spinner.style.display = "none";
+                return;
+            }
+
+            // Not done yet
+            if (data.done === false) {
+                console.log(`Jobb ${jobId} är fortfarande under bearbetning...`);
+                return; // keep polling
+            }
+
+            // Done
+            if (data.done === true) {
+                console.log(`Jobb ${jobId} är klart. Startar nedladdning.`);
+                clearInterval(interval);
+                await downloadResult(jobId, originalFilename);
+                return;
+            }
+
+            // Fallback if response shape is unexpected
+            console.warn("Oväntat svar från /status:", data);
         } catch (err) {
-            console.warn(`⚠️ Misslyckades med att hämta status för ${jobId}:`, err);
+            console.warn(`Misslyckades med att hämta status för ${jobId}:`, err);
         }
-    }, 10000);  // Poll every 10 seconds
+    }, 5000);  // Poll every 5 seconds (adjust if you like)
 }
 
 async function downloadResult(jobId, originalFilename) {

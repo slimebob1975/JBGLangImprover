@@ -18,7 +18,7 @@ import logging
 
 class JBGLanguageImprover:
         
-    def __init__(self, input_path, api_key, model, prompt_policy, temperature, include_motivations, docx_mode, logger):
+    def __init__(self, input_path, api_key, model, prompt_policy, temperature, include_motivations, docx_mode, logger, progress_callback=None):
         self.input_path = input_path
         self.api_key = api_key
         self.model = model
@@ -27,47 +27,71 @@ class JBGLanguageImprover:
         self.include_motivations = include_motivations
         self.docx_mode = docx_mode
         self.logger = logger
+        self.progress_callback = progress_callback
         self.structure_json = input_path.replace(os.path.splitext(input_path)[1], "_structure.json")
         self.suggestions_json = input_path.replace(os.path.splitext(input_path)[1], "_suggestions.json")
 
     def run(self):
-        
-        self.logger.info("🔍 Extracting structure...")
+
+        self._report("🔍 Analyserar dokumentets struktur...")
         extractor = DocumentStructureExtractor(self.input_path, self.logger)
         extractor.extract()
         self.structure_json = extractor.save_as_json()
 
-        self.logger.info("🧠 Generating suggestions with AI...")
-        ai = JBGLangImprovSuggestorAI(self.api_key, self.model, self.prompt_policy, self.temperature, self.logger)
+        self._report("🧠 Skickar dokumentet till språkmodellen för förslag...")
+        ai = JBGLangImprovSuggestorAI(
+            self.api_key,
+            self.model,
+            self.prompt_policy,
+            self.temperature,
+            self.logger,
+            progress_callback=self.progress_callback,
+        )
         ai.load_structure(self.structure_json)
         ai.suggest_changes_token_aware_batching()
         self.suggestions_json = ai.save_as_json()
 
-        self.logger.info("✏️ Applying suggestions to document...")
+        self._report("✏️ Förslagen appliceras på dokumentet...")
         try:
-            editor = JBGSuperDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.docx_mode, self.logger)
+            editor = JBGSuperDocumentEditor(
+                self.input_path,
+                self.suggestions_json,
+                self.include_motivations,
+                self.docx_mode,
+                self.logger,
+            )
             editor.apply_changes()
             output_path = editor.save_edited_document()
         except Exception as ex:
-            self.logger.warning(f"⚠️ JBGSuperDocumentEditor failed: {str(ex)}. Using fallback implementation.")
+            self.logger.warning(
+                f"⚠️ JBGSuperDocumentEditor misslyckades: {str(ex)}. Använder fallback-implementation."
+            )
             editor = JBGDocumentEditor(self.input_path, self.suggestions_json, self.include_motivations, self.logger)
             editor.apply_changes()
             output_path = editor.save_edited_document()
-            
+
             # Attempt repairs (included in the SuperEditor above)
             if editor.ext == ".docx":
                 try:
                     repair_path = output_path
-                    self.logger.info(f"🔧 Try to repair the Word document if it is partly corrupted...")
+                    self._report("🔧 Försöker reparera Word-dokumentet om det är delvis korrupt...")
                     repair_path = AutoDocxRepairer(logger=self.logger).repair(repair_path)
                 except Exception as ex:
-                    self.logger.info(f"❌ Failed to repair the Word document. Reason: {str(ex)}")
+                    self.logger.info(f"❌ Misslyckades med att reparera Word-dokumentet. Orsak: {str(ex)}")
                 else:
                     output_path = repair_path
 
-        self.logger.info(f"✅ Final improved document saved to: {output_path}")
-            
+        self._report(f"✅ Färdigt. Det förbättrade dokumentet sparades.")
+
         return output_path
+    
+    def _report(self, message: str):
+        self.logger.info(message)
+        if self.progress_callback is not None:
+            try:
+                self.progress_callback(message)
+            except Exception as ex:
+                self.logger.warning(f"Progress callback failed: {ex}")
 
 def main():
     
