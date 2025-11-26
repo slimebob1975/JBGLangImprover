@@ -171,7 +171,7 @@ async def upload_file(
 
      # Register job with initial status
     jobs_lang[job_id] = {
-        "status": "Fil uppladdad. Bearbetar dokument...",
+        "status": "✅ Fil uppladdad.",
         "done": False,
         "error": None,
     }
@@ -223,7 +223,7 @@ async def upload_file(
             if job is not None:
                 job["done"] = True
                 if not job.get("status"):
-                    job["status"] = "Språkgranskning klar."
+                    job["status"] = "✅ Språkgranskning klar."
                 job["error"] = None
 
         except Exception as e:
@@ -263,7 +263,7 @@ def check_status(job_id: str):
             return JSONResponse(
                 {
                     "done": False,
-                    "status": job.get("status") or "Bearbetar dokument...",
+                    "status": job.get("status") or "🔄 Bearbetar dokument...",
                 },
                 status_code=202,
             )
@@ -296,7 +296,7 @@ def check_status(job_id: str):
     return JSONResponse(
         {
             "done": False,
-            "status": "Bearbetar dokument...",
+            "status": "🔄 Bearbetar dokument...",
         },
         status_code=202,
     )
