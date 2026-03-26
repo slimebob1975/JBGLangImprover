@@ -122,7 +122,11 @@ templates = Jinja2Templates(directory="templates")
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"request": request},
+    )
 
 class FrameOptionsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -361,3 +365,6 @@ async def upload_file_old(file: UploadFile = File(...), api_key: str = Form(...)
         media_type='application/octet-stream'
     )
     
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}

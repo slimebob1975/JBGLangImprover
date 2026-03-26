@@ -5,6 +5,7 @@ PyMuPDF
 pypdf
 openai
 jinja2
+starlette
 python-multipart
 uvicorn[standard]
 thefuzz
