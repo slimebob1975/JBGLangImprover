@@ -11,10 +11,10 @@
 <body>
     <div id="wrapper">
         <h1 name="app-title" id="app-title">JBG klarspråkning</h1>
-        <h3><em>För .docx- eller .pdf-filer</em></h3>
+        <h3><em>För .docx-filer</em></h3>
         <form id="uploadForm">
             <label for="documentFile" title="Endast .pdf- och .docx-filer accepteras"><strong>Ladda upp din text:</strong></label><br>
-            <input type="file" id="documentFile" name="file" accept=".pdf,.docx" required><br><br>
+            <input type="file" id="documentFile" name="file" accept=".docx" required><br><br>
           
             <label><strong>Inställningar för språkmodellen</strong></label>
             <label for="apiKey" title="API-nyckeln är en form av lösenord som du får av lokalsamordnaren">Skriv in din OpenAI API-nyckel:</label><br>
@@ -32,8 +32,8 @@
             <label for="editablePrompt" title="Om du vill ge särskilda instruktioner till språkmodellen, kan du ändra den här standardtexten.">Anpassa promptsinstruktionen:</label><br>
             <textarea id="editablePrompt" name="editablePrompt" rows="6" placeholder="Laddar policy..." required></textarea><br><br>
 
-            <!-- Temperature Checkbox and Slider -->
-            <div>
+            <!-- Temperature Slider (obsolete from GPT-5 models) -->
+            <div style="display: none;">
                 <label for="temperature" title="Kreativiteten styr hur förutsägbart språkmodellen uppför sig. Låg kreativitet ger hög förutsägbarhet, och tvärtom. (0 = lågt värde, 1 = högt värde)">Välj låg eller hög kreativitet i språkgranskningen:</label>
                 <div class="form-inline">
                     <input type="range" id="temperature" name="temperature" min="0" max="1" step="0.01" value="0.7">
@@ -48,13 +48,13 @@
 
             <!-- DOCX Markup Mode -->
             <div>
-                <label>Visa förslag till förändringarna i .docx-filer som:</label>
+                <label>Visa förslag till förändringarna som:</label>
                 <div class="form-inline" id="doxcModeRadioButtons" name="doxcModeRadioButtons">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
                     <label for="simpleMarking" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">Enkel färgmarkering</label>
 
                     <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
-                    <label for="trackedChanges" title="Använd Word-inställningen 'Spåra ändringar'">Spåra ändringar (beta)</label>
+                    <label for="trackedChanges" title="Använd Word-inställningen 'Spåra ändringar'">Spåra ändringar</label>
                 </div>
             </div>
 
