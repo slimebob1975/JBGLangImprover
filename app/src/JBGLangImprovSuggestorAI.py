@@ -25,6 +25,7 @@ class SuggestedChange:
     motivation: Optional[str]
     match_status: Literal["exact", "normalized", "rejected"]
 
+
 @dataclass
 class SuggestionIssue:
     severity: Literal["warning", "error"]
@@ -110,7 +111,7 @@ class SuggestionQualityFilter:
 
     def _check_internal_note_patterns(self, s: SuggestedChange, issues: list[SuggestionIssue]):
         old = s.old or ""
-        new = s.new or ""
+        new = s.new
 
         for pattern in self.TODO_PATTERNS:
             if re.search(pattern, old, flags=re.IGNORECASE):
@@ -121,16 +122,23 @@ class SuggestionQualityFilter:
                 ))
                 break
 
-        if not old.strip() or not new.strip():
+        if not old:
             issues.append(SuggestionIssue(
                 severity="error",
-                code="empty_side",
-                message="Old eller new är tom efter trimning."
+                code="empty_old",
+                message="Old är tom."
+            ))
+
+        if new is None:
+            issues.append(SuggestionIssue(
+                severity="error",
+                code="missing_new",
+                message="New saknas."
             ))
 
     def _check_length_growth(self, s: SuggestedChange, issues: list[SuggestionIssue]):
         old_len = len(s.old.strip())
-        new_len = len(s.new.strip())
+        new_len = len((s.new or "").strip())
 
         if old_len == 0:
             issues.append(SuggestionIssue(
@@ -164,7 +172,7 @@ class SuggestionQualityFilter:
 
     def _check_sentence_expansion(self, s: SuggestedChange, issues: list[SuggestionIssue]):
         old_sentences = self._sentence_count(s.old)
-        new_sentences = self._sentence_count(s.new)
+        new_sentences = self._sentence_count(s.new or "")
 
         if old_sentences >= self.max_sentence_count_warning or new_sentences >= self.max_sentence_count_warning:
             issues.append(SuggestionIssue(
@@ -178,7 +186,7 @@ class SuggestionQualityFilter:
 
     def _check_semantic_shift_markers(self, s: SuggestedChange, issues: list[SuggestionIssue]):
         old = s.old.lower()
-        new = s.new.lower()
+        new = (s.new or "").lower()
 
         functional_shift_patterns = [
             (r"\btodo\b", r"\bta fram\b"),
@@ -213,7 +221,7 @@ class SuggestionQualityFilter:
 
     def _check_typography_consistency(self, s: SuggestedChange, issues: list[SuggestionIssue]):
         old_has_typographic_quotes = any(ch in s.old for ch in ["”", "“", "’", "‘"])
-        new_has_ascii_quotes = '"' in s.new or "'" in s.new
+        new_has_ascii_quotes = '"' in (s.new or "") or "'" in (s.new or "")
 
         if old_has_typographic_quotes and new_has_ascii_quotes:
             issues.append(SuggestionIssue(
@@ -225,7 +233,7 @@ class SuggestionQualityFilter:
     def _check_element_specific_risk(self, s: SuggestedChange, issues: list[SuggestionIssue]):
         element_type = s.element_type or ""
         old_len = len(s.old.strip())
-        new_len = len(s.new.strip())
+        new_len = len((s.new or "").strip())
 
         if element_type in {"footnote", "table_cell", "textbox", "header", "footer"}:
             if new_len - old_len > 120:
@@ -246,6 +254,7 @@ class SuggestionQualityFilter:
     def _target_label(self, s: SuggestedChange) -> str:
         return f"{s.element_type}:{s.element_id}"
 
+
 # ============================================================================
 # Suggestor
 # ============================================================================
@@ -258,7 +267,10 @@ class JBGLangImprovSuggestorAI:
     - matchningskontroll mot källstrukturen
     - kvalitetsfilter
     - filterrapport
+    - minimering av ändringsspann
     """
+
+    WORD_CHAR_RE = re.compile(r"[\wÅÄÖåäöÀ-ÖØ-öø-ÿ-]", re.UNICODE)
 
     def __init__(
         self,
@@ -397,7 +409,6 @@ class JBGLangImprovSuggestorAI:
             raise ValueError("Unsupported document type. Only docx is supported.")
 
         elements = structure["elements"]
-
         chunks = self._chunk_elements(elements, max_tokens_per_call=max_tokens_per_call)
         num_chunks = len(chunks)
 
@@ -536,7 +547,11 @@ class JBGLangImprovSuggestorAI:
                 )
                 continue
 
-            validated.append(suggested)
+            minimized = self._minimize_and_filter_suggestion(suggested)
+            if minimized is None:
+                continue
+
+            validated.append(minimized)
 
         return self._deduplicate_validated_suggestions(validated)
 
@@ -587,6 +602,158 @@ class JBGLangImprovSuggestorAI:
             motivation=motivation,
             match_status=match_status,
         )
+
+    # -------------------------------------------------------------------------
+    # Minimering av ändringsspann
+    # -------------------------------------------------------------------------
+
+    def _minimize_and_filter_suggestion(self, suggestion: SuggestedChange) -> Optional[SuggestedChange]:
+        minimized = self._minimize_change_span(suggestion)
+        if minimized is None:
+            return None
+
+        # Om både old och new bara är whitespace finns ingen meningsfull ändring kvar
+        if minimized.old.strip() == "" and minimized.new.strip() == "":
+            self.logger.info(
+                f"Ignoring whitespace-only suggestion for "
+                f"{minimized.element_type}:{minimized.element_id}"
+            )
+            return None
+
+        return minimized
+
+    def _minimize_change_span(self, suggestion: SuggestedChange) -> Optional[SuggestedChange]:
+        """
+        Reducerar old/new till minsta faktiska diff.
+        Konservativ hållning:
+        - rena trailing-whitespace-ändringar ignoreras
+        - om minimeringen skulle ge old == "" expanderas spannet till ett
+          närliggande ord/fasspann i stället för att skapa ren insertion
+        """
+        old = suggestion.old
+        new = suggestion.new
+
+        if old == new:
+            return None
+
+        # 1. Ignorera rena trailing-whitespace-fall helt
+        if old.rstrip() == new.rstrip() and old != new:
+            trailing_old = old[len(old.rstrip()):]
+            trailing_new = new[len(new.rstrip()):]
+
+            if trailing_old and trailing_old.isspace() and trailing_new == "":
+                self.logger.info(
+                    f"Ignoring trailing-whitespace-only suggestion for "
+                    f"{suggestion.element_type}:{suggestion.element_id}"
+                )
+                return None
+
+        # 2. Trimma gemensam prefix
+        prefix_len = 0
+        max_prefix = min(len(old), len(new))
+        while prefix_len < max_prefix and old[prefix_len] == new[prefix_len]:
+            prefix_len += 1
+
+        old_rem = old[prefix_len:]
+        new_rem = new[prefix_len:]
+
+        # 3. Trimma gemensam suffix
+        suffix_len = 0
+        max_suffix = min(len(old_rem), len(new_rem))
+        while (
+            suffix_len < max_suffix
+            and old_rem[-(suffix_len + 1)] == new_rem[-(suffix_len + 1)]
+        ):
+            suffix_len += 1
+
+        if suffix_len > 0:
+            old_rem = old_rem[:-suffix_len]
+            new_rem = new_rem[:-suffix_len]
+
+        if old_rem == new_rem:
+            return None
+
+        # 4. Konservativ fallback: om old blir tomt, expandera till ord-/frasspann
+        if old_rem == "":
+            expanded = self._expand_empty_old_minimization(old, new)
+            if expanded is None:
+                return suggestion
+            old_rem, new_rem = expanded
+
+        # 5. Säkerhetsnät: old måste finnas
+        if old_rem == "":
+            return suggestion
+
+        return SuggestedChange(
+            element_type=suggestion.element_type,
+            element_id=suggestion.element_id,
+            footnote_id=suggestion.footnote_id,
+            old=old_rem,
+            new=new_rem,
+            motivation=suggestion.motivation,
+            match_status=suggestion.match_status,
+        )
+
+    def _expand_empty_old_minimization(self, old: str, new: str) -> Optional[tuple[str, str]]:
+        """
+        Om teckenmässig minimering skulle ge old == "", expandera till ett
+        stabilt ord-/frasspann. Exempel:
+            old="... senare"
+            new="... senare i processen"
+        -> ("senare", "senare i processen")
+        """
+        # hitta första skillnad
+        start = 0
+        max_len = min(len(old), len(new))
+        while start < max_len and old[start] == new[start]:
+            start += 1
+
+        # välj ett konservativt ankare till vänster: närmaste ordstart
+        left = self._scan_left_to_word_boundary(old, start)
+
+        old_tail = old[left:]
+        new_tail = new[left:]
+
+        # trimma gemensam suffix från tail
+        suffix_len = 0
+        max_suffix = min(len(old_tail), len(new_tail))
+        while (
+            suffix_len < max_suffix
+            and old_tail[-(suffix_len + 1)] == new_tail[-(suffix_len + 1)]
+        ):
+            suffix_len += 1
+
+        if suffix_len > 0:
+            old_tail = old_tail[:-suffix_len]
+            new_tail = new_tail[:-suffix_len]
+
+        if old_tail == "":
+            return None
+
+        return old_tail, new_tail
+
+    def _scan_left_to_word_boundary(self, text: str, idx: int) -> int:
+        """
+        Flyttar vänster till början av ordet som föregår skillnaden.
+        Om vi står mitt i eller precis efter ett ord används ordstart som ankare.
+        """
+        if idx <= 0:
+            return 0
+
+        i = idx
+
+        # Om skillnaden börjar efter whitespace/punktuation, gå först vänster över sådant
+        while i > 0 and not self._is_word_char(text[i - 1]):
+            i -= 1
+
+        # Gå sedan till början av närmast föregående ord
+        while i > 0 and self._is_word_char(text[i - 1]):
+            i -= 1
+
+        return i
+
+    def _is_word_char(self, ch: str) -> bool:
+        return bool(self.WORD_CHAR_RE.match(ch))
 
     # -------------------------------------------------------------------------
     # Matchning
@@ -645,7 +812,7 @@ class JBGLangImprovSuggestorAI:
         result = []
 
         for item in suggestions:
-            key =(
+            key = (
                 item.element_type,
                 item.element_id,
                 item.footnote_id,
@@ -708,18 +875,12 @@ class JBGLangImprovSuggestorAI:
             return value
         return str(value)
 
-    def _require_int(self, item: dict[str, Any], key: str) -> int:
-        value = item.get(key)
-        if not isinstance(value, int):
-            raise ValueError(f"Missing or invalid int field: {key}")
-        return value
-
     def _safe_preview(self, item: dict[str, Any], max_len: int = 180) -> str:
         text = json.dumps(item, ensure_ascii=False)
         if len(text) <= max_len:
             return text
         return text[:max_len] + "..."
-        
+
 
 def main():
     num_args = len(sys.argv)

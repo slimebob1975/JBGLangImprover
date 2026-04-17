@@ -32,10 +32,11 @@ class RenderResult:
 
 class TrackedChangesRenderer:
     """
-    Tracked changes renderer v2.1
+    Tracked changes renderer v2.2
 
     Stöd:
     - paragraph i word/document.xml
+    - table_cell i word/document.xml
     - run-splitting på textnoder
     - riktiga <w:del> och <w:ins>
     - trackRevisions i settings.xml
@@ -43,10 +44,11 @@ class TrackedChangesRenderer:
     Inte stöd ännu:
     - footnotes
     - textbox
-    - table_cell
     - comments
     - headers/footers
     """
+
+    SUPPORTED_ELEMENT_TYPES = {"paragraph", "table_cell"}
 
     def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst"):
         self.package = package
@@ -63,21 +65,24 @@ class TrackedChangesRenderer:
 
     def apply_plan(self, plan: ChangePlan) -> RenderResult:
         try:
-            if plan.target.element_type != "paragraph":
+            if plan.target.element_type not in self.SUPPORTED_ELEMENT_TYPES:
                 return RenderResult(
                     plan=plan,
                     applied=False,
-                    message=f"TrackedChangesRenderer v2.1 supports only paragraph, got {plan.target.element_type}",
+                    message=(
+                        "TrackedChangesRenderer v2.2 supports only "
+                        f"{sorted(self.SUPPORTED_ELEMENT_TYPES)}, got {plan.target.element_type}"
+                    ),
                 )
 
             if plan.target.part_name != "word/document.xml":
                 return RenderResult(
                     plan=plan,
                     applied=False,
-                    message=f"TrackedChangesRenderer v2.1 supports only word/document.xml, got {plan.target.part_name}",
+                    message=f"TrackedChangesRenderer v2.2 supports only word/document.xml, got {plan.target.part_name}",
                 )
 
-            self._apply_paragraph_plan(plan)
+            self._apply_document_plan(plan)
             self.package.write_document_tree(self.document_adapter.tree)
 
             return RenderResult(plan=plan, applied=True, message="Applied tracked changes")
@@ -91,11 +96,14 @@ class TrackedChangesRenderer:
         grouped: dict[str, list[ChangePlan]] = {}
 
         for plan in plans:
-            if plan.target.element_type != "paragraph":
+            if plan.target.element_type not in self.SUPPORTED_ELEMENT_TYPES:
                 results.append(RenderResult(
                     plan=plan,
                     applied=False,
-                    message=f"TrackedChangesRenderer v2.1 supports only paragraph, got {plan.target.element_type}",
+                    message=(
+                        "TrackedChangesRenderer v2.2 supports only "
+                        f"{sorted(self.SUPPORTED_ELEMENT_TYPES)}, got {plan.target.element_type}"
+                    ),
                 ))
                 continue
 
@@ -132,7 +140,7 @@ class TrackedChangesRenderer:
     # Core rendering
     # ------------------------------------------------------------------
 
-    def _apply_paragraph_plan(self, plan: ChangePlan) -> None:
+    def _apply_document_plan(self, plan: ChangePlan) -> None:
         located = self.document_adapter.locate_plan_nodes(plan)
         model = located["paragraph_model"]
         paragraph = model.paragraph_element
@@ -241,9 +249,7 @@ class TrackedChangesRenderer:
         new_text: str,
     ) -> None:
         first_text_node = self._find_nearest_text_node_forward(overlapping_nodes, 0)
-        last_text_node = self._find_nearest_text_node_backward(
-            overlapping_nodes, len(overlapping_nodes) - 1
-        )
+        last_text_node = self._find_nearest_text_node_backward(overlapping_nodes, len(overlapping_nodes) - 1)
 
         if first_text_node is None or last_text_node is None:
             raise ValueError("Multi-run case could not find text boundary nodes")
@@ -310,6 +316,10 @@ class TrackedChangesRenderer:
 
         for offset, elem in enumerate(new_elements):
             paragraph.insert(insert_index + offset, elem)
+
+    # ------------------------------------------------------------------
+    # Boundary helpers
+    # ------------------------------------------------------------------
 
     def _find_nearest_text_node_forward(
         self,
