@@ -37,7 +37,7 @@ Följ också dessa detaljerade riktlinjer:
 - Skriv ut förkortningar.
 - Använd punktlistor vid uppräkningar eller för att göra texten tydligare.
 - Använd endast stor bokstav i början av rubriker.
-- När orden "arbetslöshetskassor" eller "arbetslöshetkassorna" nämns, använd hellre omskrivningarna "a-kassor" och "a-kassorna"
+- När orden "arbetslöshetskassor" eller "arbetslöshetkassorna" nämns, använd hellre omskrivningarna "a-kassor" och "a-kassorna" om inte orden används i referenser till andra källor eller lagrum
 
 Texten ska vara professionell, tydlig och tillgänglig utan att vara informell.
 

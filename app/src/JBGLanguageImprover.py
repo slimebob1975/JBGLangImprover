@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 
+from app.src.JBGCommentsRenderer import CommentsRenderer
 from app.src.JBGTokenDiffEngine import TokenDiffEngine
 
 try:
@@ -203,6 +204,23 @@ class JBGLanguageImprover:
                 renderer = SimpleMarkupRenderer(pkg, self.logger)
 
             self.render_results = renderer.apply_plans(self.change_plans)
+
+            self.comment_results = []
+            if self.include_motivations and self.docx_mode == "tracked":
+                comments_renderer = CommentsRenderer(pkg, self.logger)
+                self.comment_results = comments_renderer.apply_comments_for_results(self.render_results)
+
+                comment_applied = len([r for r in self.comment_results if r.applied])
+                comment_failed = len([r for r in self.comment_results if not r.applied])
+                self.logger.info(f"Comments applied: {comment_applied}")
+                self.logger.info(f"Comments skipped/failed: {comment_failed}")
+
+                for result in self.comment_results:
+                    if not result.applied:
+                        target = result.plan.target
+                        label = f"{target.element_type}:{target.element_id}"
+                        self.logger.warning(f"Comment skipped/failed for {label}: {result.message}")
+
             final_output_path = pkg.save(output_path)
 
         applied_count = len([r for r in self.render_results if r.applied])
