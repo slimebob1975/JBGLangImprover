@@ -24,6 +24,8 @@ class SuggestedChange:
     new: str
     motivation: Optional[str]
     match_status: Literal["exact", "normalized", "rejected"]
+    safe_to_apply: bool = True
+    safety_reason: Optional[str] = None
 
 
 @dataclass
@@ -551,8 +553,16 @@ class JBGLangImprovSuggestorAI:
             if minimized is None:
                 continue
 
-            validated.append(minimized)
+            if not minimized.safe_to_apply:
+                self.logger.warning(
+                    f"Rejected unsafe suggestion: "
+                    f"{minimized.element_type}:{minimized.element_id} "
+                    f"reason={minimized.safety_reason}"
+                )
+                continue
 
+            validated.append(minimized)
+            
         return self._deduplicate_validated_suggestions(validated)
 
     def _validate_single_suggestion(self, item: dict[str, Any], structure_type: str) -> SuggestedChange:
@@ -612,7 +622,6 @@ class JBGLangImprovSuggestorAI:
         if minimized is None:
             return None
 
-        # Om både old och new bara är whitespace finns ingen meningsfull ändring kvar
         if minimized.old.strip() == "" and minimized.new.strip() == "":
             self.logger.info(
                 f"Ignoring whitespace-only suggestion for "
@@ -620,7 +629,16 @@ class JBGLangImprovSuggestorAI:
             )
             return None
 
-        return minimized
+        element_text = self._get_element_text_for_suggestion(minimized)
+        stabilized = self._stabilize_span_with_element_context(minimized, element_text)
+
+        if not stabilized.safe_to_apply:
+            self.logger.warning(
+                f"Marked suggestion unsafe [{stabilized.element_type}:{stabilized.element_id}] "
+                f"{stabilized.safety_reason}: old={stabilized.old!r}, new={stabilized.new!r}"
+            )
+
+        return stabilized
 
     def _minimize_change_span(self, suggestion: SuggestedChange) -> Optional[SuggestedChange]:
         """
@@ -755,6 +773,185 @@ class JBGLangImprovSuggestorAI:
     def _is_word_char(self, ch: str) -> bool:
         return bool(self.WORD_CHAR_RE.match(ch))
 
+    def _find_exact_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
+        idx = element_text.find(old_text)
+        if idx == -1:
+            return None
+        return idx, idx + len(old_text)
+
+    def _is_word_char(self, ch: str) -> bool:
+        return bool(self.WORD_CHAR_RE.match(ch))
+
+    def _expand_span_to_word_boundaries(
+        self,
+        element_text: str,
+        start: int,
+        end: int,
+    ) -> tuple[int, int]:
+        """
+        Expanderar ett spann till närmaste ordgränser.
+        Konservativt: bara bokstavs-/siffergränser, inte fraser.
+        """
+        new_start = start
+        new_end = end
+
+        while new_start > 0 and self._is_word_char(element_text[new_start - 1]):
+            new_start -= 1
+
+        while new_end < len(element_text) and self._is_word_char(element_text[new_end]):
+            new_end += 1
+
+        return new_start, new_end
+
+
+    def _looks_like_fragment_boundary(
+        self,
+        element_text: str,
+        start: int,
+        end: int,
+    ) -> bool:
+        """
+        Returnerar True om spannet sannolikt börjar/slutar mitt i ord.
+        """
+        left_midword = start > 0 and start < len(element_text) and self._is_word_char(element_text[start - 1]) and self._is_word_char(element_text[start])
+        right_midword = end > 0 and end < len(element_text) and self._is_word_char(element_text[end - 1]) and self._is_word_char(element_text[end])
+
+        return left_midword or right_midword
+
+
+    def _looks_like_truncated_text(self, text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return False
+
+        # mycket korta alfabetiska stumpar
+        if len(stripped) <= 3 and any(ch.isalpha() for ch in stripped):
+            common_ok = {"de", "dem", "om", "av", "en", "ett", "är", "vi", "i", "på"}
+            if stripped.lower() not in common_ok:
+                return True
+
+        # typiska avhuggna slut
+        suspicious_suffixes = (
+            "ä", "pe", "ni", "me", "na", "nde", "å", "ekräftas", "bedöme"
+        )
+        if any(stripped.endswith(sfx) for sfx in suspicious_suffixes):
+            return True
+
+        return False
+
+
+    def _causes_obvious_duplication(
+        self,
+        element_text: str,
+        start: int,
+        end: int,
+        replacement: str,
+    ) -> bool:
+        """
+        Enkel skyddsregel mot uppenbar dubblering/sammanstötning.
+        """
+        before = element_text[:start]
+        after = element_text[end:]
+        candidate = before + replacement + after
+
+        # 1. direkt dubblering av replacement intill sig själv
+        if replacement and replacement.strip():
+            doubled = replacement.strip() + replacement.strip()
+            if doubled in candidate.replace(" ", ""):
+                return True
+
+        # 2. samma ord två gånger direkt efter varandra
+        words = candidate.split()
+        for i in range(len(words) - 1):
+            if words[i] == words[i + 1] and len(words[i]) > 3:
+                return True
+
+        # 3. typiska kollisioner vi redan sett
+        suspicious_patterns = [
+            "GenomMed",
+            "IAFvi",
+            "observerabedömer",
+            "hafår",
+            "dagpedagpenni",
+            "utbetalningarutbetalningarna",
+        ]
+        if any(pat in candidate for pat in suspicious_patterns):
+            return True
+
+        return False
+
+
+    def _stabilize_span_with_element_context(
+        self,
+        suggestion: SuggestedChange,
+        element_text: str,
+    ) -> SuggestedChange:
+        """
+        Försök reparera reducerade spann genom att:
+        1. hitta exakt old i element_text
+        2. expandera till ordgränser om old ser ut att ligga mitt i ord
+        3. markera unsafe om spannet fortfarande ser trasigt ut
+        """
+        span = self._find_exact_span_in_element_text(suggestion.old, element_text)
+        if span is None:
+            return SuggestedChange(
+                element_type=suggestion.element_type,
+                element_id=suggestion.element_id,
+                footnote_id=suggestion.footnote_id,
+                old=suggestion.old,
+                new=suggestion.new,
+                motivation=suggestion.motivation,
+                match_status=suggestion.match_status,
+                safe_to_apply=False,
+                safety_reason="old_not_found_exactly_in_element_text",
+            )
+
+        start, end = span
+        old = suggestion.old
+        new = suggestion.new
+
+        if self._looks_like_fragment_boundary(element_text, start, end):
+            expanded_start, expanded_end = self._expand_span_to_word_boundaries(element_text, start, end)
+            expanded_old = element_text[expanded_start:expanded_end]
+
+            prefix_len = start - expanded_start
+            suffix_len = expanded_end - end
+
+            expanded_new = new
+            if prefix_len > 0:
+                expanded_new = expanded_old[:prefix_len] + expanded_new
+            if suffix_len > 0:
+                expanded_new = expanded_new + expanded_old[len(expanded_old) - suffix_len:]
+
+            old = expanded_old
+            new = expanded_new
+            start, end = expanded_start, expanded_end
+
+        safe = True
+        reason = None
+
+        if self._looks_like_truncated_text(old):
+            safe = False
+            reason = "old_looks_truncated"
+        elif new.strip() and self._looks_like_truncated_text(new):
+            safe = False
+            reason = "new_looks_truncated"
+        elif self._causes_obvious_duplication(element_text, start, end, new):
+            safe = False
+            reason = "replacement_causes_obvious_duplication"
+
+        return SuggestedChange(
+            element_type=suggestion.element_type,
+            element_id=suggestion.element_id,
+            footnote_id=suggestion.footnote_id,
+            old=old,
+            new=new,
+            motivation=suggestion.motivation,
+            match_status=suggestion.match_status,
+            safe_to_apply=safe,
+            safety_reason=reason,
+        )
+
     # -------------------------------------------------------------------------
     # Matchning
     # -------------------------------------------------------------------------
@@ -787,6 +984,12 @@ class JBGLangImprovSuggestorAI:
             if element.get("element_id") == element_id:
                 return element
         return None
+    
+    def _get_element_text_for_suggestion(self, suggestion: SuggestedChange) -> str:
+        element = self._get_docx_element_by_id(suggestion.element_id)
+        if element is None:
+            return ""
+        return element.get("text", "") or ""
 
     # -------------------------------------------------------------------------
     # Deduplicering
@@ -850,6 +1053,9 @@ class JBGLangImprovSuggestorAI:
             payload["motivation"] = s.motivation
         if s.footnote_id is not None:
             payload["footnote_id"] = s.footnote_id
+        if not s.safe_to_apply:
+            payload["safe_to_apply"] = False
+            payload["safety_reason"] = s.safety_reason
         return payload
 
     # -------------------------------------------------------------------------
