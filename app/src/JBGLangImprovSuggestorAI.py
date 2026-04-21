@@ -3,6 +3,8 @@ import openai
 import sys
 import os
 import re
+from collections import defaultdict
+from difflib import SequenceMatcher
 import time
 import logging
 from dataclasses import dataclass, field
@@ -270,6 +272,7 @@ class JBGLangImprovSuggestorAI:
     - kvalitetsfilter
     - filterrapport
     - minimering av ändringsspann
+    - generell säkerhetsrensning av suggestions före planner
     """
 
     WORD_CHAR_RE = re.compile(r"[\wÅÄÖåäöÀ-ÖØ-öø-ÿ-]", re.UNICODE)
@@ -562,8 +565,12 @@ class JBGLangImprovSuggestorAI:
                 continue
 
             validated.append(minimized)
-            
-        return self._deduplicate_validated_suggestions(validated)
+
+        validated = self._deduplicate_validated_suggestions(validated)
+        validated = self._validate_and_clean_suggestions(validated)
+
+        self.logger.info(f"Validated suggestions after safety-cleaning: {len(validated)}")
+        return validated
 
     def _validate_single_suggestion(self, item: dict[str, Any], structure_type: str) -> SuggestedChange:
         if structure_type != "docx":
@@ -646,7 +653,7 @@ class JBGLangImprovSuggestorAI:
         Konservativ hållning:
         - rena trailing-whitespace-ändringar ignoreras
         - om minimeringen skulle ge old == "" expanderas spannet till ett
-          närliggande ord/fasspann i stället för att skapa ren insertion
+          närliggande ord-/frasspann i stället för att skapa ren insertion
         """
         old = suggestion.old
         new = suggestion.new
@@ -720,19 +727,16 @@ class JBGLangImprovSuggestorAI:
             new="... senare i processen"
         -> ("senare", "senare i processen")
         """
-        # hitta första skillnad
         start = 0
         max_len = min(len(old), len(new))
         while start < max_len and old[start] == new[start]:
             start += 1
 
-        # välj ett konservativt ankare till vänster: närmaste ordstart
         left = self._scan_left_to_word_boundary(old, start)
 
         old_tail = old[left:]
         new_tail = new[left:]
 
-        # trimma gemensam suffix från tail
         suffix_len = 0
         max_suffix = min(len(old_tail), len(new_tail))
         while (
@@ -760,18 +764,13 @@ class JBGLangImprovSuggestorAI:
 
         i = idx
 
-        # Om skillnaden börjar efter whitespace/punktuation, gå först vänster över sådant
         while i > 0 and not self._is_word_char(text[i - 1]):
             i -= 1
 
-        # Gå sedan till början av närmast föregående ord
         while i > 0 and self._is_word_char(text[i - 1]):
             i -= 1
 
         return i
-
-    def _is_word_char(self, ch: str) -> bool:
-        return bool(self.WORD_CHAR_RE.match(ch))
 
     def _find_exact_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
         idx = element_text.find(old_text)
@@ -803,7 +802,6 @@ class JBGLangImprovSuggestorAI:
 
         return new_start, new_end
 
-
     def _looks_like_fragment_boundary(
         self,
         element_text: str,
@@ -813,32 +811,50 @@ class JBGLangImprovSuggestorAI:
         """
         Returnerar True om spannet sannolikt börjar/slutar mitt i ord.
         """
-        left_midword = start > 0 and start < len(element_text) and self._is_word_char(element_text[start - 1]) and self._is_word_char(element_text[start])
-        right_midword = end > 0 and end < len(element_text) and self._is_word_char(element_text[end - 1]) and self._is_word_char(element_text[end])
+        left_midword = (
+            start > 0
+            and start < len(element_text)
+            and self._is_word_char(element_text[start - 1])
+            and self._is_word_char(element_text[start])
+        )
+        right_midword = (
+            end > 0
+            and end < len(element_text)
+            and self._is_word_char(element_text[end - 1])
+            and self._is_word_char(element_text[end])
+        )
 
         return left_midword or right_midword
-
 
     def _looks_like_truncated_text(self, text: str) -> bool:
         stripped = text.strip()
         if not stripped:
             return False
 
-        # mycket korta alfabetiska stumpar
-        if len(stripped) <= 3 and any(ch.isalpha() for ch in stripped):
-            common_ok = {"de", "dem", "om", "av", "en", "ett", "är", "vi", "i", "på"}
-            if stripped.lower() not in common_ok:
+        if not any(ch.isalpha() for ch in stripped):
+            return False
+
+        common_short_words = {
+            "de", "dem", "om", "av", "en", "ett", "är", "vi", "i", "på",
+            "att", "för", "med", "och", "det", "den", "som", "har"
+        }
+        if len(stripped) <= 3 and stripped.lower() not in common_short_words:
+            return True
+
+        if stripped.isalpha():
+            vowels = set("aeiouyåäöAEIOUYÅÄÖ")
+            vowel_count = sum(1 for ch in stripped if ch in vowels)
+
+            if len(stripped) >= 5 and vowel_count <= 1:
                 return True
 
-        # typiska avhuggna slut
-        suspicious_suffixes = (
-            "ä", "pe", "ni", "me", "na", "nde", "å", "ekräftas", "bedöme"
-        )
-        if any(stripped.endswith(sfx) for sfx in suspicious_suffixes):
+            if len(stripped) <= 4 and stripped.lower() not in common_short_words:
+                return True
+
+        if re.search(r"[A-Za-zÅÄÖåäö][^\w\s-]+[A-Za-zÅÄÖåäö]", stripped):
             return True
 
         return False
-
 
     def _causes_obvious_duplication(
         self,
@@ -847,39 +863,28 @@ class JBGLangImprovSuggestorAI:
         end: int,
         replacement: str,
     ) -> bool:
-        """
-        Enkel skyddsregel mot uppenbar dubblering/sammanstötning.
-        """
         before = element_text[:start]
         after = element_text[end:]
         candidate = before + replacement + after
 
-        # 1. direkt dubblering av replacement intill sig själv
-        if replacement and replacement.strip():
-            doubled = replacement.strip() + replacement.strip()
-            if doubled in candidate.replace(" ", ""):
-                return True
-
-        # 2. samma ord två gånger direkt efter varandra
         words = candidate.split()
+
         for i in range(len(words) - 1):
-            if words[i] == words[i + 1] and len(words[i]) > 3:
+            if words[i] == words[i + 1] and len(words[i]) > 2:
                 return True
 
-        # 3. typiska kollisioner vi redan sett
-        suspicious_patterns = [
-            "GenomMed",
-            "IAFvi",
-            "observerabedömer",
-            "hafår",
-            "dagpedagpenni",
-            "utbetalningarutbetalningarna",
-        ]
-        if any(pat in candidate for pat in suspicious_patterns):
-            return True
+        left_char = before[-1] if before else ""
+        first_new = replacement[0] if replacement else ""
+        last_new = replacement[-1] if replacement else ""
+        right_char = after[0] if after else ""
+
+        if replacement:
+            if left_char and first_new and self._is_word_char(left_char) and self._is_word_char(first_new):
+                return True
+            if last_new and right_char and self._is_word_char(last_new) and self._is_word_char(right_char):
+                return True
 
         return False
-
 
     def _stabilize_span_with_element_context(
         self,
@@ -953,6 +958,220 @@ class JBGLangImprovSuggestorAI:
         )
 
     # -------------------------------------------------------------------------
+    # Generell säkerhetsrensning före planner
+    # -------------------------------------------------------------------------
+
+    def _validate_and_clean_suggestions(
+        self,
+        suggestions: list[SuggestedChange],
+    ) -> list[SuggestedChange]:
+        suggestions = self._deduplicate_conflicting_same_old(suggestions)
+
+        cleaned: list[SuggestedChange] = []
+
+        for s in suggestions:
+            verdict = self._assess_suggestion_safety(s)
+
+            if verdict["reject"]:
+                self.logger.warning(
+                    f"Rejected unsafe suggestion "
+                    f"[{s.element_type}:{s.element_id}] "
+                    f"reason={verdict['reason']} "
+                    f"old={s.old!r} new={s.new!r}"
+                )
+                continue
+
+            cleaned.append(
+                SuggestedChange(
+                    element_type=s.element_type,
+                    element_id=s.element_id,
+                    footnote_id=s.footnote_id,
+                    old=s.old,
+                    new=s.new,
+                    motivation=s.motivation,
+                    match_status=s.match_status,
+                    safe_to_apply=True,
+                    safety_reason=None,
+                )
+            )
+
+        return cleaned
+
+    def _deduplicate_conflicting_same_old(
+        self,
+        suggestions: list[SuggestedChange],
+    ) -> list[SuggestedChange]:
+        grouped: dict[tuple, list[SuggestedChange]] = defaultdict(list)
+
+        for s in suggestions:
+            key = (s.element_type, s.element_id, s.footnote_id, s.old)
+            grouped[key].append(s)
+
+        resolved: list[SuggestedChange] = []
+
+        for _, group in grouped.items():
+            if len(group) == 1:
+                resolved.append(group[0])
+                continue
+
+            best = self._choose_best_conflicting_suggestion(group)
+
+            self.logger.warning(
+                f"Resolved conflicting suggestions for "
+                f"{best.element_type}:{best.element_id} old={best.old!r} "
+                f"by keeping new={best.new!r} and dropping {len(group) - 1} alternatives"
+            )
+
+            resolved.append(best)
+
+        return resolved
+
+    def _choose_best_conflicting_suggestion(
+        self,
+        group: list[SuggestedChange],
+    ) -> SuggestedChange:
+        scored = []
+
+        for s in group:
+            score = 0.0
+
+            if not self._looks_like_corrupted_text(s.new):
+                score += 3.0
+
+            score += self._similarity_ratio(s.old, s.new)
+
+            old_nonword = len(re.findall(r"[^\w\s]", s.old))
+            new_nonword = len(re.findall(r"[^\w\s]", s.new))
+            if new_nonword <= old_nonword + 1:
+                score += 0.5
+
+            length_delta = abs(len(s.new.strip()) - len(s.old.strip()))
+            score -= min(length_delta / 50.0, 1.0)
+
+            scored.append((score, s))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1]
+
+    def _assess_suggestion_safety(self, s: SuggestedChange) -> dict:
+        old = (s.old or "").strip()
+        new = (s.new or "").strip()
+
+        if not old:
+            return {"reject": True, "reason": "empty_old"}
+
+        if old == new:
+            return {"reject": True, "reason": "old_equals_new"}
+
+        if old.strip() == new.strip() and old != new:
+            return {"reject": True, "reason": "whitespace_only_change"}
+
+        if self._looks_like_corrupted_text(new):
+            return {"reject": True, "reason": "corrupted_new_text"}
+
+        if self._looks_like_corrupted_text(old):
+            return {"reject": True, "reason": "corrupted_old_span"}
+
+        if self._too_low_overlap(old, new, s.element_type):
+            return {"reject": True, "reason": "low_similarity"}
+
+        if self._self_overlap_or_merge_risk(old, new):
+            return {"reject": True, "reason": "self_overlap_or_merge_risk"}
+
+        if self._looks_like_bad_casing_change(old, new):
+            return {"reject": True, "reason": "bad_casing_change"}
+
+        if self._looks_like_spelling_degradation(old, new):
+            return {"reject": True, "reason": "spelling_degradation"}
+
+        if s.element_type in {"textbox", "footnote"} and self._similarity_ratio(old, new) < 0.45:
+            return {"reject": True, "reason": "low_similarity_sensitive_element"}
+
+        return {"reject": False, "reason": None}
+
+    def _similarity_ratio(self, old: str, new: str) -> float:
+        return SequenceMatcher(None, old, new).ratio()
+
+    def _too_low_overlap(self, old: str, new: str, element_type: str) -> bool:
+        ratio = self._similarity_ratio(old, new)
+        short_local = max(len(old), len(new)) <= 25
+
+        if short_local and ratio < 0.35:
+            return True
+
+        if element_type in {"table_cell", "textbox", "footnote"} and ratio < 0.30:
+            return True
+
+        return False
+
+    def _looks_like_corrupted_text(self, text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
+
+        if re.search(r"[a-zåäö]{2,}[A-ZÅÄÖ][a-zåäö]+", t):
+            return True
+
+        if t.isalpha() and len(t) >= 6:
+            vowels = set("aeiouyåäöAEIOUYÅÄÖ")
+            vowel_count = sum(1 for ch in t if ch in vowels)
+            if vowel_count <= 1:
+                return True
+
+        if re.search(r"[A-Za-zÅÄÖåäö][^\w\s-]+[A-Za-zÅÄÖåäö]", t):
+            return True
+
+        if re.search(r"(.)\1{3,}", t):
+            return True
+
+        return False
+
+    def _self_overlap_or_merge_risk(self, old: str, new: str) -> bool:
+        old_s = old.strip()
+        new_s = new.strip()
+
+        if not old_s or not new_s:
+            return False
+
+        if old_s.isalpha() and new_s.isalpha():
+            if old_s in new_s and old_s != new_s:
+                return True
+            if new_s in old_s and new_s != old_s and len(new_s) <= len(old_s) - 2:
+                return True
+
+        if old_s.isalpha() and new_s.isalpha() and len(old_s) >= 6 and len(new_s) >= 4:
+            if new_s.startswith(old_s[-4:]) or new_s.endswith(old_s[:4]):
+                return True
+
+        return False
+
+    def _looks_like_bad_casing_change(self, old: str, new: str) -> bool:
+        if old.lower() != new.lower():
+            return False
+
+        if old and new and old[0].islower() and new[0].isupper() and old[1:] == new[1:]:
+            return False
+
+        return old != new
+
+    def _looks_like_spelling_degradation(self, old: str, new: str) -> bool:
+        old_s = old.strip()
+        new_s = new.strip()
+
+        if len(old_s) < 5 or len(new_s) < 5:
+            return False
+
+        ratio = self._similarity_ratio(old_s, new_s)
+
+        if ratio > 0.80 and len(new_s) < len(old_s):
+            old_vowels = sum(1 for ch in old_s if ch.lower() in "aeiouyåäö")
+            new_vowels = sum(1 for ch in new_s if ch.lower() in "aeiouyåäö")
+            if new_vowels < old_vowels:
+                return True
+
+        return False
+
+    # -------------------------------------------------------------------------
     # Matchning
     # -------------------------------------------------------------------------
 
@@ -984,7 +1203,7 @@ class JBGLangImprovSuggestorAI:
             if element.get("element_id") == element_id:
                 return element
         return None
-    
+
     def _get_element_text_for_suggestion(self, suggestion: SuggestedChange) -> str:
         element = self._get_docx_element_by_id(suggestion.element_id)
         if element is None:

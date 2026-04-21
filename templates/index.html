@@ -43,17 +43,17 @@
             <label><strong>Hur ska resultatet se ut?</strong></label>
             <!-- DOCX Markup Mode -->
             <div>
-                <label>Visa förslag till förändringarna som:</label>
+                <label>Visa förslag till förändringarna med:</label>
                 <div class="form-inline" id="doxcModeRadioButtons" name="doxcModeRadioButtons">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
                     <label for="simpleMarking" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">Enkel färgmarkering</label>
 
                     <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
-                    <label for="trackedChanges" title="Använd Word-inställningen 'Spåra ändringar'">Spåra ändringar</label>
+                    <label for="trackedChanges" title="Använd Word-inställningen 'Spåra ändringar'">Spåra ändringar och infoga kommentarer</label>
                 </div>
             </div>
-             <div class="form-inline">
-                <label for="includeMotivations" title="Språkmodellen genererar motiveringar till förändringsförslagen, och dessa läggs som kommentarer i dokumentet">Lägg till kommentarer till förändringsförslagen:</label>
+             <div class="form-inline" style="display: none;">
+                <label for="includeMotivations" title="Språkmodellen genererar motiveringar till förändringsförslagen, och dessa läggs som kommentarer i dokumentet">Lägg till kommentarer till förslagen ("Spåra ändringar"):</label>
                 <input type="checkbox" id="includeMotivations" name="includeMotivations" checked>
             </div>
 
