@@ -22,6 +22,8 @@ class CommentRenderResult:
 
 
 class CommentsRenderer:
+    SUPPORTED_ANCHOR_PARTS = {"word/document.xml", "word/footnotes.xml"}
+
     def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst", initials: str = "JBG"):
         self.package = package
         self.logger = logger
@@ -81,29 +83,37 @@ class CommentsRenderer:
                 ))
                 continue
 
-            if anchor_part_name != "word/document.xml":
+            if anchor_part_name not in self.SUPPORTED_ANCHOR_PARTS:
                 results.append(CommentRenderResult(
                     plan=plan,
                     applied=False,
-                    message=f"CommentsRenderer v3 supports only word/document.xml anchors, got {anchor_part_name}",
+                    message=(
+                        "CommentsRenderer supports only "
+                        f"{sorted(self.SUPPORTED_ANCHOR_PARTS)}, got {anchor_part_name}"
+                    ),
                     comment_id=None,
                 ))
                 continue
 
             try:
-                anchor_element = self._find_anchor_by_revision_id(
+                anchor_element, host_tree = self._find_anchor_by_revision_id(
                     part_name=anchor_part_name,
                     anchor_kind=anchor_kind,
                     revision_id=anchor_revision_id,
                 )
-                if anchor_element is None:
+                if anchor_element is None or host_tree is None:
                     raise ValueError(
-                        f"Could not find anchor {anchor_kind} with revision id={anchor_revision_id}"
+                        f"Could not find anchor {anchor_kind} with revision id={anchor_revision_id} "
+                        f"in {anchor_part_name}"
                     )
 
                 comment_id = self._attach_comment_to_anchor(anchor_element, motivation)
+
+                # Skriv alltid comments.xml
                 self.package.write_comments_tree(self.comments_tree)
-                self.package.write_document_tree(anchor_element.getroottree())
+
+                # Skriv tillbaka rätt host-part
+                self._write_host_tree(anchor_part_name, host_tree)
 
                 results.append(CommentRenderResult(
                     plan=plan,
@@ -130,11 +140,8 @@ class CommentsRenderer:
         part_name: str,
         anchor_kind: str,
         revision_id: str,
-    ) -> Optional[etree._Element]:
-        if part_name != "word/document.xml":
-            return None
-
-        tree = self.package.read_document_tree()
+    ) -> tuple[Optional[etree._Element], Optional[etree._ElementTree]]:
+        tree = self._read_host_tree(part_name)
         root = tree.getroot()
 
         tag = "ins" if anchor_kind == "ins" else "del"
@@ -142,9 +149,25 @@ class CommentsRenderer:
         matches = root.xpath(xpath, namespaces={"w": W_NS})
 
         if not matches:
-            return None
+            return None, None
 
-        return matches[0]
+        return matches[0], tree
+
+    def _read_host_tree(self, part_name: str) -> etree._ElementTree:
+        if part_name == "word/document.xml":
+            return self.package.read_document_tree()
+        if part_name == "word/footnotes.xml":
+            return self.package.read_footnotes_tree(create_if_missing=False)
+        raise ValueError(f"Unsupported anchor host part: {part_name}")
+
+    def _write_host_tree(self, part_name: str, tree: etree._ElementTree) -> None:
+        if part_name == "word/document.xml":
+            self.package.write_document_tree(tree)
+            return
+        if part_name == "word/footnotes.xml":
+            self.package.write_footnotes_tree(tree)
+            return
+        raise ValueError(f"Unsupported anchor host part: {part_name}")
 
     # ------------------------------------------------------------------
     # Huvudlogik
@@ -178,13 +201,7 @@ class CommentsRenderer:
         anchor_index = parent.index(anchor_element)
         parent.insert(anchor_index, start)
         parent.insert(anchor_index + 2, end)
-
-        paragraph_children = list(paragraph)
-        if parent in paragraph_children:
-            paragraph_index = paragraph_children.index(parent)
-            paragraph.insert(paragraph_index + 1, ref_run)
-        else:
-            paragraph.append(ref_run)
+        parent.insert(anchor_index + 3, ref_run)
 
         return comment_id
 
