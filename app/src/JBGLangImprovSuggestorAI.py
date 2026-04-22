@@ -273,6 +273,7 @@ class JBGLangImprovSuggestorAI:
     - filterrapport
     - minimering av ändringsspann
     - generell säkerhetsrensning av suggestions före planner
+    - skydd mot överlapp med efterföljande kontext i elementtexten
     """
 
     WORD_CHAR_RE = re.compile(r"[\wÅÄÖåäöÀ-ÖØ-öø-ÿ-]", re.UNICODE)
@@ -778,6 +779,33 @@ class JBGLangImprovSuggestorAI:
             return None
         return idx, idx + len(old_text)
 
+    def _find_normalized_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
+        """
+        Försöker hitta ett ungefärligt spann i originaltexten när endast normaliserad matchning lyckas.
+        Returnerar första spannet vars normaliserade innehåll matchar normaliserad old_text.
+        """
+        target = self._normalize_text(old_text)
+        if not target:
+            return None
+
+        n = len(element_text)
+        min_len = max(1, len(old_text) - 8)
+        max_len = min(n, len(old_text) + 16)
+
+        for start in range(n):
+            for end in range(start + min_len, min(n, start + max_len) + 1):
+                candidate = element_text[start:end]
+                if self._normalize_text(candidate) == target:
+                    return start, end
+
+        return None
+
+    def _find_span_or_normalized_span(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
+        span = self._find_exact_span_in_element_text(old_text, element_text)
+        if span is not None:
+            return span
+        return self._find_normalized_span_in_element_text(old_text, element_text)
+
     def _is_word_char(self, ch: str) -> bool:
         return bool(self.WORD_CHAR_RE.match(ch))
 
@@ -886,6 +914,42 @@ class JBGLangImprovSuggestorAI:
 
         return False
 
+    def _new_overlaps_following_context(
+        self,
+        element_text: str,
+        start: int,
+        end: int,
+        old: str,
+        new: str,
+    ) -> bool:
+        """
+        Returnerar True om slutet av new överlappar början av texten direkt efter old-spannet.
+        Exempel:
+            old="upptäckte"
+            new="upptäckte och återkrävde"
+            after=" och återkrävde ..."
+        """
+        if not new.strip():
+            return False
+
+        trailing_context = element_text[end:end + 80]
+        if not trailing_context:
+            return False
+
+        new_norm = self._normalize_text(new)
+        trailing_norm = self._normalize_text(trailing_context)
+
+        if not new_norm or not trailing_norm:
+            return False
+
+        max_check = min(len(new_norm), len(trailing_norm), 40)
+
+        for k in range(max_check, 4, -1):
+            if new_norm[-k:] == trailing_norm[:k]:
+                return True
+
+        return False
+
     def _stabilize_span_with_element_context(
         self,
         suggestion: SuggestedChange,
@@ -897,7 +961,7 @@ class JBGLangImprovSuggestorAI:
         2. expandera till ordgränser om old ser ut att ligga mitt i ord
         3. markera unsafe om spannet fortfarande ser trasigt ut
         """
-        span = self._find_exact_span_in_element_text(suggestion.old, element_text)
+        span = self._find_span_or_normalized_span(suggestion.old, element_text)
         if span is None:
             return SuggestedChange(
                 element_type=suggestion.element_type,
@@ -944,6 +1008,9 @@ class JBGLangImprovSuggestorAI:
         elif self._causes_obvious_duplication(element_text, start, end, new):
             safe = False
             reason = "replacement_causes_obvious_duplication"
+        elif self._new_overlaps_following_context(element_text, start, end, old, new):
+            safe = False
+            reason = "new_overlaps_following_context"
 
         return SuggestedChange(
             element_type=suggestion.element_type,
@@ -1086,6 +1153,13 @@ class JBGLangImprovSuggestorAI:
 
         if s.element_type in {"textbox", "footnote"} and self._similarity_ratio(old, new) < 0.45:
             return {"reject": True, "reason": "low_similarity_sensitive_element"}
+
+        element_text = self._get_element_text_for_suggestion(s)
+        span = self._find_span_or_normalized_span(old, element_text)
+        if span is not None:
+            start, end = span
+            if self._new_overlaps_following_context(element_text, start, end, old, new):
+                return {"reject": True, "reason": "new_overlaps_following_context"}
 
         return {"reject": False, "reason": None}
 
