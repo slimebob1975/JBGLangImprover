@@ -24,7 +24,7 @@ The current setup is optimized for Swedish plain-language review in formal publi
    - long replacement spans
    - spelling or formatting risks
    - changes that are difficult to anchor safely in the document
-5. **Applies accepted suggestions to DOCX files**The editor marks removed text and inserted text in the Word document so that the user can review proposed changes.
+5. **Applies accepted suggestions to DOCX files**The editor marks removed text and inserted text in the Word document so that the user can review proposed changes. Body text, table cells, textboxes, footnotes, headers and footers are rendered in their actual OOXML parts. Shared headers/footers are extracted once and retain their section associations.
 6. **Writes logs and reports**Each run produces diagnostic output such as:
 
    - the raw suggestions JSON
@@ -197,8 +197,14 @@ language-improver/
 │   └── src/
 │       ├── JBGLanguageImprover.py
 │       ├── JBGLangImprovSuggestorAI.py
-│       ├── JBGDocumentEditor.py
-│       └── JBGDocumentStructureExtractor.py
+│       ├── JBGDocumentStructureExtractor.py
+│       ├── JBGHeaderFooterPartAdapter.py
+│       ├── JBGDocxPackage.py
+│       ├── JBGChangePlanner.py
+│       ├── JBGSimpleMarkupRenderer.py
+│       └── JBGTrackedChangesRenderer.py
+├── tests/
+│   └── test_header_footer_pipeline.py
 ├── policy/
 │   └── prompt_policy.md
 ├── templates/
@@ -237,6 +243,32 @@ http://127.0.0.1:8000
 
 From there you can upload a Word document, enter your OpenAI API key, choose a model and run the language improvement workflow.
 
+## Running Regression Tests
+
+The regression suite creates temporary DOCX fixtures and verifies:
+
+- real relationship targets instead of section-number-based filenames
+- inherited/shared headers and footers across sections
+- default, first-page and even-page headers
+- paragraphs inside header tables
+- simple markup and tracked changes in header/footer parts
+- preservation of PAGE fields and basic package round-tripping
+- motivation comments anchored to tracked header/footer changes
+- separate targeting of every paragraph in a multi-paragraph table cell
+- simple markup and tracked changes in table-cell paragraphs
+- compatibility with the legacy first-paragraph table-cell ID
+- a narrow spelling-degradation guard that permits legitimate shortenings
+- paragraph-granular textbox extraction based on drawing order, excluding
+  duplicate VML/fallback textbox representations
+- tracked changes whose anchors end at a tab or manual line break
+- stable similarity scoring for long natural-language rewrites
+
+Run the suite from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ---
 
 ## Recommended Prompt Tuning Workflow
@@ -266,8 +298,8 @@ This makes it easier to separate prompt effects from filtering and rendering iss
 The system is designed to be extensible. Useful areas for improvement include:
 
 - stronger suggestion validation
-- better Swedish spelling and morphology checks
+- dictionary-backed Swedish spelling and morphology checks
 - safer anchoring of long replacements
-- better handling of tables and footnotes
+- better handling of merged/nested tables and footnotes
 - prompt variants for different document types
 - evaluation scripts for comparing suggestion files between runs

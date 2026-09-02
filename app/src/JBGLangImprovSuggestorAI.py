@@ -1164,7 +1164,11 @@ class JBGLangImprovSuggestorAI:
         return {"reject": False, "reason": None}
 
     def _similarity_ratio(self, old: str, new: str) -> float:
-        return SequenceMatcher(None, old, new).ratio()
+        # Character sequences longer than 200 characters trigger
+        # SequenceMatcher's autojunk heuristic.  Natural-language text has a
+        # small alphabet, so almost every character then becomes "popular"
+        # and legitimate long rewrites can receive a near-zero score.
+        return SequenceMatcher(None, old, new, autojunk=False).ratio()
 
     def _too_low_overlap(self, old: str, new: str, element_type: str) -> bool:
         ratio = self._similarity_ratio(old, new)
@@ -1229,21 +1233,47 @@ class JBGLangImprovSuggestorAI:
         return old != new
 
     def _looks_like_spelling_degradation(self, old: str, new: str) -> bool:
-        old_s = old.strip()
-        new_s = new.strip()
+        """Detect narrow, typo-like character loss in a single word.
 
-        if len(old_s) < 5 or len(new_s) < 5:
+        The previous vowel-count heuristic rejected many legitimate
+        shortenings and terminology changes.  This guard now fires only when
+        the proposed word is the original word with one or two internal
+        characters deleted, for example ``rapporten`` -> ``raporten``.
+        """
+        old_s = old.strip().lower()
+        new_s = new.strip().lower()
+
+        word_pattern = r"[A-Za-zÅÄÖåäöÀ-ÖØ-öø-ÿ]+"
+        if not re.fullmatch(word_pattern, old_s) or not re.fullmatch(word_pattern, new_s):
             return False
 
-        ratio = self._similarity_ratio(old_s, new_s)
+        if len(old_s) < 6 or len(new_s) < 5:
+            return False
 
-        if ratio > 0.80 and len(new_s) < len(old_s):
-            old_vowels = sum(1 for ch in old_s if ch.lower() in "aeiouyåäö")
-            new_vowels = sum(1 for ch in new_s if ch.lower() in "aeiouyåäö")
-            if new_vowels < old_vowels:
-                return True
+        removed_count = len(old_s) - len(new_s)
+        if removed_count not in {1, 2}:
+            return False
 
-        return False
+        # Suffix and inflection changes are not spelling degradation.
+        if old_s[0] != new_s[0] or old_s[-1] != new_s[-1]:
+            return False
+
+        if self._similarity_ratio(old_s, new_s) < 0.84:
+            return False
+
+        deleted_count = 0
+        for tag, old_start, old_end, _new_start, _new_end in SequenceMatcher(
+            None,
+            old_s,
+            new_s,
+        ).get_opcodes():
+            if tag == "equal":
+                continue
+            if tag != "delete":
+                return False
+            deleted_count += old_end - old_start
+
+        return deleted_count == removed_count
 
     # -------------------------------------------------------------------------
     # Matchning

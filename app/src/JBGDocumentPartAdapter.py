@@ -192,18 +192,23 @@ class DocumentPartAdapter:
 
     def _find_table_cell_paragraph(self, plan: ChangePlan) -> etree._Element:
         """
-        Första versionen använder första stycket i tabellcellen.
-        element_id-format: table_T_cell_R_C
+        element_id-format: table_T_cell_R_C_pP.
+        Äldre table_T_cell_R_C stöds och pekar då på första stycket.
         """
         element_id = plan.target.element_id or ""
         parts = element_id.split("_")
-        if len(parts) != 5 or parts[0] != "table" or parts[2] != "cell":
+        if len(parts) not in {5, 6} or parts[0] != "table" or parts[2] != "cell":
             raise ValueError(f"Invalid table_cell element_id: {element_id}")
 
         try:
             table_index = int(parts[1])
             row_index = int(parts[3])
             col_index = int(parts[4])
+            paragraph_index = 1
+            if len(parts) == 6:
+                if not parts[5].startswith("p"):
+                    raise ValueError(f"Invalid table paragraph index in {element_id}")
+                paragraph_index = int(parts[5][1:])
         except Exception as ex:
             raise ValueError(f"Invalid table indices in {element_id}") from ex
 
@@ -222,33 +227,64 @@ class DocumentPartAdapter:
             raise ValueError(f"Column index out of range: {col_index}")
 
         cell = cells[col_index - 1]
-        paragraphs = cell.findall(f".//{{{W_NS}}}p")
+        paragraphs = cell.findall(f"./{{{W_NS}}}p")
         if not paragraphs:
             raise ValueError(f"No paragraph found in table cell {element_id}")
 
-        return paragraphs[0]
+        if paragraph_index < 1 or paragraph_index > len(paragraphs):
+            raise ValueError(
+                f"Table paragraph index out of range: {paragraph_index} in {element_id}"
+            )
+
+        return paragraphs[paragraph_index - 1]
 
     def _find_textbox_paragraph(self, plan: ChangePlan) -> etree._Element:
         """
-        Första versionen använder första paragraph i textboxens txbxContent.
-        element_id-format: textbox_N
+        element_id-format: textbox_N_pP.
+        Äldre textbox_N stöds och pekar då på första stycket.
+
+        Textboxindexet räknar bara w:drawing-element som innehåller en
+        w:txbxContent. Word kan även lagra VML-/fallback-kopior av samma
+        textruta, så ett globalt //w:txbxContent-index är inte stabilt.
         """
         element_id = plan.target.element_id or ""
+        parts = element_id.split("_")
+        if len(parts) not in {2, 3} or parts[0] != "textbox":
+            raise ValueError(f"Invalid textbox element_id: {element_id}")
+
         try:
-            textbox_index = int(element_id.split("_")[1])
+            textbox_index = int(parts[1])
+            paragraph_index = 1
+            if len(parts) == 3:
+                if not parts[2].startswith("p"):
+                    raise ValueError(f"Invalid textbox paragraph index in {element_id}")
+                paragraph_index = int(parts[2][1:])
         except Exception as ex:
             raise ValueError(f"Invalid textbox element_id: {element_id}") from ex
 
-        txbx_contents = self.root.xpath("//w:txbxContent", namespaces=NSMAP)
-        if textbox_index < 1 or textbox_index > len(txbx_contents):
+        drawings = self.root.xpath(
+            "//w:body/w:p//w:drawing[.//w:txbxContent]",
+            namespaces=NSMAP,
+        )
+        if textbox_index < 1 or textbox_index > len(drawings):
             raise ValueError(f"Textbox index out of range: {textbox_index}")
 
-        txbx = txbx_contents[textbox_index - 1]
+        drawing = drawings[textbox_index - 1]
+        txbx_contents = drawing.xpath(".//w:txbxContent", namespaces=NSMAP)
+        if not txbx_contents:
+            raise ValueError(f"No textbox content found for {element_id}")
+
+        txbx = txbx_contents[0]
         paragraphs = txbx.findall(f".//{{{W_NS}}}p")
         if not paragraphs:
             raise ValueError(f"No paragraph found in textbox {element_id}")
 
-        return paragraphs[0]
+        if paragraph_index < 1 or paragraph_index > len(paragraphs):
+            raise ValueError(
+                f"Textbox paragraph index out of range: {paragraph_index} in {element_id}"
+            )
+
+        return paragraphs[paragraph_index - 1]
 
     # ------------------------------------------------------------------
     # Bygg paragraph model
@@ -259,7 +295,15 @@ class DocumentPartAdapter:
         visible_parts: list[str] = []
         cursor = 0
 
-        for run in paragraph_element.findall(f".//{{{W_NS}}}r"):
+        for run in paragraph_element.iterdescendants(f"{{{W_NS}}}r"):
+            # A paragraph can contain a drawing/textbox with nested paragraphs.
+            # Only include runs whose nearest paragraph ancestor is this one.
+            nearest_paragraph = next(
+                run.iterancestors(tag=f"{{{W_NS}}}p"),
+                None,
+            )
+            if nearest_paragraph is not paragraph_element:
+                continue
             run_nodes, cursor = self._extract_run_nodes(run, cursor)
             nodes.extend(run_nodes)
             for n in run_nodes:

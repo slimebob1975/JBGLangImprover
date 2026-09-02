@@ -14,6 +14,11 @@ except ModuleNotFoundError:
     from JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
 
 try:
+    from app.src.JBGHeaderFooterPartAdapter import HeaderFooterPartAdapter
+except ModuleNotFoundError:
+    from JBGHeaderFooterPartAdapter import HeaderFooterPartAdapter
+
+try:
     from app.src.JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
 except ModuleNotFoundError:
     from JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
@@ -49,11 +54,15 @@ class SimpleMarkupRenderer:
     - table_cell i word/document.xml
     - textbox i word/document.xml
     - footnote i word/footnotes.xml
+    - header/footer i den verkliga OOXML-delen
     """
 
     DOCUMENT_ELEMENT_TYPES = {"paragraph", "table_cell", "textbox"}
     FOOTNOTE_ELEMENT_TYPES = {"footnote"}
-    SUPPORTED_ELEMENT_TYPES = DOCUMENT_ELEMENT_TYPES | FOOTNOTE_ELEMENT_TYPES
+    STORY_ELEMENT_TYPES = {"header", "footer"}
+    SUPPORTED_ELEMENT_TYPES = (
+        DOCUMENT_ELEMENT_TYPES | FOOTNOTE_ELEMENT_TYPES | STORY_ELEMENT_TYPES
+    )
 
     # Klassiska granskningsfärger i Word-liknande stil
     DELETE_COLOR = "FF0000"  # röd
@@ -63,6 +72,7 @@ class SimpleMarkupRenderer:
         self.package = package
         self.logger = logger
         self.document_adapter = DocumentPartAdapter(package, logger)
+        self.story_adapter = HeaderFooterPartAdapter(package, logger)
 
         self.footnotes_adapter = None
         if self.package.part_exists("word/footnotes.xml"):
@@ -97,6 +107,11 @@ class SimpleMarkupRenderer:
 
                 self._apply_document_plan(plan)
                 self.package.write_document_tree(self.document_adapter.tree)
+                return RenderResult(plan=plan, applied=True, message="Applied simple markup")
+
+            if plan.target.element_type in self.STORY_ELEMENT_TYPES:
+                self._apply_story_plan(plan)
+                self.story_adapter.write_tree(plan.target.part_name)
                 return RenderResult(plan=plan, applied=True, message="Applied simple markup")
 
             if plan.target.element_type in self.FOOTNOTE_ELEMENT_TYPES:
@@ -176,6 +191,8 @@ class SimpleMarkupRenderer:
                         self.document_adapter.refresh()
                     elif plan.target.part_name == "word/footnotes.xml" and self.footnotes_adapter is not None:
                         self.footnotes_adapter.refresh()
+                    elif plan.target.element_type in self.STORY_ELEMENT_TYPES:
+                        self.story_adapter.refresh(plan.target.part_name)
 
         return results
 
@@ -197,6 +214,19 @@ class SimpleMarkupRenderer:
             paragraph=paragraph,
             visible_text=model.visible_text,
             overlapping_nodes=overlapping_nodes,
+            anchor_start=plan.anchor.start,
+            anchor_end=plan.anchor.end,
+            old_text=plan.old_text,
+            new_text=plan.new_text,
+        )
+
+    def _apply_story_plan(self, plan: ChangePlan) -> None:
+        located = self.story_adapter.locate_plan_nodes(plan)
+        model = located["paragraph_model"]
+        self._apply_simple_change_to_paragraph_element(
+            paragraph=model.paragraph_element,
+            visible_text=model.visible_text,
+            overlapping_nodes=located["overlapping_nodes"],
             anchor_start=plan.anchor.start,
             anchor_end=plan.anchor.end,
             old_text=plan.old_text,
@@ -683,7 +713,7 @@ class SimpleMarkupRenderer:
             return None
 
         parts = element_id.split("_")
-        if len(parts) != 5 or parts[0] != "table" or parts[2] != "cell":
+        if len(parts) not in {5, 6} or parts[0] != "table" or parts[2] != "cell":
             return None
 
         try:

@@ -15,6 +15,11 @@ except ModuleNotFoundError:
     from JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
 
 try:
+    from app.src.JBGHeaderFooterPartAdapter import HeaderFooterPartAdapter
+except ModuleNotFoundError:
+    from JBGHeaderFooterPartAdapter import HeaderFooterPartAdapter
+
+try:
     from app.src.JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
 except ModuleNotFoundError:
     from JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
@@ -41,13 +46,17 @@ class RenderResult:
 class TrackedChangesRenderer:
     DOCUMENT_ELEMENT_TYPES = {"paragraph", "table_cell", "textbox"}
     FOOTNOTE_ELEMENT_TYPES = {"footnote"}
-    SUPPORTED_ELEMENT_TYPES = DOCUMENT_ELEMENT_TYPES | FOOTNOTE_ELEMENT_TYPES
+    STORY_ELEMENT_TYPES = {"header", "footer"}
+    SUPPORTED_ELEMENT_TYPES = (
+        DOCUMENT_ELEMENT_TYPES | FOOTNOTE_ELEMENT_TYPES | STORY_ELEMENT_TYPES
+    )
 
     def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst"):
         self.package = package
         self.logger = logger
         self.author = author
         self.document_adapter = DocumentPartAdapter(package, logger)
+        self.story_adapter = HeaderFooterPartAdapter(package, logger)
 
         self.footnotes_adapter = None
         if self.package.part_exists("word/footnotes.xml"):
@@ -91,6 +100,18 @@ class TrackedChangesRenderer:
                     applied=True,
                     message="Applied tracked changes",
                     anchor_part_name="word/document.xml",
+                    anchor_kind=anchor_info["anchor_kind"],
+                    anchor_revision_id=anchor_info["anchor_revision_id"],
+                )
+
+            if plan.target.element_type in self.STORY_ELEMENT_TYPES:
+                anchor_info = self._apply_story_plan(plan)
+                self.story_adapter.write_tree(plan.target.part_name)
+                return RenderResult(
+                    plan=plan,
+                    applied=True,
+                    message="Applied tracked changes",
+                    anchor_part_name=plan.target.part_name,
                     anchor_kind=anchor_info["anchor_kind"],
                     anchor_revision_id=anchor_info["anchor_revision_id"],
                 )
@@ -181,6 +202,8 @@ class TrackedChangesRenderer:
                         self.document_adapter.refresh()
                     elif plan.target.part_name == "word/footnotes.xml" and self.footnotes_adapter is not None:
                         self.footnotes_adapter.refresh()
+                    elif plan.target.element_type in self.STORY_ELEMENT_TYPES:
+                        self.story_adapter.refresh(plan.target.part_name)
 
         return results
 
@@ -201,6 +224,19 @@ class TrackedChangesRenderer:
             paragraph=paragraph,
             visible_text=model.visible_text,
             overlapping_nodes=overlapping_nodes,
+            anchor_start=plan.anchor.start,
+            anchor_end=plan.anchor.end,
+            old_text=plan.old_text,
+            new_text=plan.new_text,
+        )
+
+    def _apply_story_plan(self, plan: ChangePlan) -> dict:
+        located = self.story_adapter.locate_plan_nodes(plan)
+        model = located["paragraph_model"]
+        return self._apply_tracked_change_to_paragraph_element(
+            paragraph=model.paragraph_element,
+            visible_text=model.visible_text,
+            overlapping_nodes=located["overlapping_nodes"],
             anchor_start=plan.anchor.start,
             anchor_end=plan.anchor.end,
             old_text=plan.old_text,
@@ -330,7 +366,11 @@ class TrackedChangesRenderer:
         first_run = first_node.run_element
         last_run = last_node.run_element
 
-        if first_run is last_run:
+        if (
+            first_run is last_run
+            and first_node is last_node
+            and first_node.kind == "text"
+        ):
             return self._rewrite_single_run_case(
                 paragraph=paragraph,
                 run=first_run,
@@ -494,7 +534,7 @@ class TrackedChangesRenderer:
             return None
 
         parts = element_id.split("_")
-        if len(parts) != 5 or parts[0] != "table" or parts[2] != "cell":
+        if len(parts) not in {5, 6} or parts[0] != "table" or parts[2] != "cell":
             return None
 
         try:
@@ -597,14 +637,8 @@ class TrackedChangesRenderer:
         old_text: str,
         new_text: str,
     ) -> dict:
-        first_text_node = self._find_nearest_text_node_forward(overlapping_nodes, 0)
-        last_text_node = self._find_nearest_text_node_backward(overlapping_nodes, len(overlapping_nodes) - 1)
-
-        if first_text_node is None or last_text_node is None:
-            raise ValueError("Multi-run case could not find text boundary nodes")
-
-        first_node = first_text_node
-        last_node = last_text_node
+        first_node = overlapping_nodes[0]
+        last_node = overlapping_nodes[-1]
 
         if first_node.run_element is None or last_node.run_element is None:
             raise ValueError("Resolved text boundary node(s) without run_element")
@@ -612,16 +646,25 @@ class TrackedChangesRenderer:
         first_run = first_node.run_element
         last_run = last_node.run_element
 
-        first_local_start = anchor_start - first_node.start
-        last_local_end = anchor_end - last_node.start
+        first_local_start = self._local_offset_in_run(
+            first_node,
+            anchor_start,
+        )
+        last_local_end = self._local_offset_in_run(
+            last_node,
+            anchor_end,
+        )
 
-        if first_local_start < 0 or first_local_start > len(first_node.text):
+        first_run_text = self._extract_visible_text_from_run(first_run)
+        last_run_text = self._extract_visible_text_from_run(last_run)
+
+        if first_local_start < 0 or first_local_start > len(first_run_text):
             raise ValueError("Invalid first_local_start")
-        if last_local_end < 0 or last_local_end > len(last_node.text):
+        if last_local_end < 0 or last_local_end > len(last_run_text):
             raise ValueError("Invalid last_local_end")
 
-        first_before = first_node.text[:first_local_start]
-        last_after = last_node.text[last_local_end:]
+        first_before = first_run_text[:first_local_start]
+        last_after = last_run_text[last_local_end:]
 
         changed_runs = self._get_runs_between(paragraph, first_run, last_run)
         if not changed_runs:
@@ -735,6 +778,38 @@ class TrackedChangesRenderer:
             elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
                 parts.append("\n")
         return "".join(parts)
+
+    def _local_offset_in_run(self, node, global_offset: int) -> int:
+        """Translate a paragraph offset to the visible offset in one run.
+
+        A boundary node can be w:tab, w:br or w:cr, and a run can contain
+        several visible children.  Offsets relative only to node.text are
+        therefore insufficient at special-node boundaries.
+        """
+        run = node.run_element
+        if run is None:
+            raise ValueError("Cannot calculate a local offset without run_element")
+
+        if global_offset < node.start or global_offset > node.end:
+            raise ValueError("Global offset is outside the boundary node")
+
+        local_offset = 0
+        for child in run:
+            if child is node.element:
+                return local_offset + (global_offset - node.start)
+            local_offset += len(self._visible_text_from_run_child(child))
+
+        raise ValueError("Boundary node is not a child of its run")
+
+    @staticmethod
+    def _visible_text_from_run_child(child: etree._Element) -> str:
+        if child.tag == f"{{{W_NS}}}t":
+            return child.text or ""
+        if child.tag == f"{{{W_NS}}}tab":
+            return "\t"
+        if child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
+            return "\n"
+        return ""
 
     def _get_runs_between(self, paragraph: etree._Element, first_run: etree._Element, last_run: etree._Element) -> list[etree._Element]:
         runs = paragraph.findall(f"./{{{W_NS}}}r")

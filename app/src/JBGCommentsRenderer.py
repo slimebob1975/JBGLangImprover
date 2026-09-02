@@ -83,13 +83,14 @@ class CommentsRenderer:
                 ))
                 continue
 
-            if anchor_part_name not in self.SUPPORTED_ANCHOR_PARTS:
+            is_story_plan = plan.target.element_type in {"header", "footer"}
+            if not self._is_supported_anchor_part(anchor_part_name, is_story_plan):
                 results.append(CommentRenderResult(
                     plan=plan,
                     applied=False,
                     message=(
-                        "CommentsRenderer supports only "
-                        f"{sorted(self.SUPPORTED_ANCHOR_PARTS)}, got {anchor_part_name}"
+                        "CommentsRenderer supports document, footnotes and "
+                        f"header/footer parts, got {anchor_part_name}"
                     ),
                     comment_id=None,
                 ))
@@ -158,6 +159,8 @@ class CommentsRenderer:
             return self.package.read_document_tree()
         if part_name == "word/footnotes.xml":
             return self.package.read_footnotes_tree(create_if_missing=False)
+        if self._is_word_xml_part(part_name):
+            return self.package.read_xml_tree(part_name)
         raise ValueError(f"Unsupported anchor host part: {part_name}")
 
     def _write_host_tree(self, part_name: str, tree: etree._ElementTree) -> None:
@@ -167,7 +170,27 @@ class CommentsRenderer:
         if part_name == "word/footnotes.xml":
             self.package.write_footnotes_tree(tree)
             return
+        if self._is_word_xml_part(part_name):
+            self.package.write_xml_tree(part_name, tree)
+            return
         raise ValueError(f"Unsupported anchor host part: {part_name}")
+
+    @classmethod
+    def _is_supported_anchor_part(
+        cls,
+        part_name: Optional[str],
+        is_story_plan: bool = False,
+    ) -> bool:
+        return bool(
+            part_name in cls.SUPPORTED_ANCHOR_PARTS
+            or (is_story_plan and cls._is_word_xml_part(part_name))
+        )
+
+    @staticmethod
+    def _is_word_xml_part(part_name: Optional[str]) -> bool:
+        if not part_name or not part_name.endswith(".xml"):
+            return False
+        return part_name.startswith("word/") and ".." not in part_name.split("/")
 
     # ------------------------------------------------------------------
     # Huvudlogik

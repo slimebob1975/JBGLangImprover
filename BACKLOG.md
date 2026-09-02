@@ -10,4 +10,5 @@
 
 ## Solved
 
-[ ]  Issue 1
+- [x] Resolve and render headers/footers through their real OOXML relationship targets
+- [x] Add regression coverage for shared section stories, variants, fields, markup and tracked changes

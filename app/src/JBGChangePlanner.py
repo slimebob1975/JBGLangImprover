@@ -31,6 +31,7 @@ class ChangeTarget:
     element_type: Optional[str]
     element_id: Optional[str]
     footnote_id: Optional[str]
+    container_path: Optional[str] = None
 
 
 @dataclass
@@ -137,6 +138,7 @@ class ChangePlanner:
             element_type=suggestion.element_type,
             element_id=suggestion.element_id,
             footnote_id=suggestion.footnote_id,
+            container_path=element.get("container_path"),
         )
 
         notes = self._build_notes(
@@ -367,9 +369,27 @@ class ChangePlanner:
         if not element_id:
             return None
 
-        for element in self.structure.get("elements", []):
+        elements = self.structure.get("elements", [])
+        for element in elements:
             if element.get("element_id") == element_id:
                 return element
+
+        # Structures created by the paragraph-granular extractors use a _p1
+        # suffix. Keep saved suggestions from older versions usable by
+        # resolving their legacy cell/textbox IDs to the first paragraph.
+        parts = element_id.split("_")
+        is_legacy_table = (
+            len(parts) == 5
+            and parts[0] == "table"
+            and parts[2] == "cell"
+        )
+        is_legacy_textbox = len(parts) == 2 and parts[0] == "textbox"
+        if is_legacy_table or is_legacy_textbox:
+            paragraph_id = f"{element_id}_p1"
+            for element in elements:
+                if element.get("element_id") == paragraph_id:
+                    return element
+
         return None
 
     def _get_pdf_line(self, page: Optional[int], line: Optional[int]) -> Optional[dict]:
