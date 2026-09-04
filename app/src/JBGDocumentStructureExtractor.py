@@ -381,15 +381,28 @@ class DocumentStructureExtractor:
     @staticmethod
     def _visible_text_from_xml_paragraph(paragraph: etree._Element) -> str:
         parts = []
-        # python-docx BaseOxmlElement.xpath already supplies the standard
-        # namespace mapping and does not accept lxml's namespaces argument.
-        for node in paragraph.xpath(".//w:t | .//w:tab | .//w:br | .//w:cr"):
-            if node.tag == f"{{{W_NS}}}t":
-                parts.append(node.text or "")
-            elif node.tag == f"{{{W_NS}}}tab":
-                parts.append("\t")
-            else:
-                parts.append("\n")
+
+        # Only run content contributes visible text.  In particular, a
+        # paragraph property such as w:pPr/w:tabs/w:tab describes a tab stop
+        # and must not be exposed as a literal tab character.  Keep this in
+        # sync with DocumentPartAdapter's paragraph model so extracted text
+        # and renderer offsets use the same coordinate system.
+        for run in paragraph.iterdescendants(f"{{{W_NS}}}r"):
+            nearest_paragraph = next(
+                run.iterancestors(tag=f"{{{W_NS}}}p"),
+                None,
+            )
+            if nearest_paragraph is not paragraph:
+                continue
+
+            for child in run:
+                if child.tag == f"{{{W_NS}}}t":
+                    parts.append(child.text or "")
+                elif child.tag == f"{{{W_NS}}}tab":
+                    parts.append("\t")
+                elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
+                    parts.append("\n")
+
         return "".join(parts)
 
     def _extract_footnotes(self):

@@ -14,6 +14,7 @@ from app.src.JBGDocxPackage import W_NS, DocxPackage
 from app.src.JBGLangImprovSuggestorAI import SuggestedChange
 from app.src.JBGTokenDiffEngine import TokenDiffEngine
 from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
+from app.src.JBGSimpleMarkupRenderer import SimpleMarkupRenderer
 
 
 NS = {"w": W_NS}
@@ -48,6 +49,11 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
             [element["text"] for element in textboxes],
             ["Första rutan", "Andra rutans första stycke", "ha diagranm%"],
         )
+        target = next(
+            element for element in textboxes
+            if element["element_id"] == "textbox_2_p2"
+        )
+        self.assertFalse(target["contains_tabs"])
 
     def test_tracked_changes_target_the_requested_textbox_paragraph(self):
         source = self.root / "textboxes.docx"
@@ -73,6 +79,36 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
         self.assertIn("(se diagram)", self._all_text(paragraphs[1]))
         self.assertTrue(paragraphs[1].xpath(".//w:del", namespaces=NS))
         self.assertTrue(paragraphs[1].xpath(".//w:ins", namespaces=NS))
+
+    def test_simple_markup_targets_textbox_paragraph_with_tab_stop_property(self):
+        source = self.root / "textboxes.docx"
+        output = self.root / "textboxes-simple.docx"
+        self._create_textbox_fixture(source)
+        structure = DocumentStructureExtractor(str(source), self.logger).extract()
+        suggestion = SuggestedChange(
+            element_type="textbox",
+            element_id="textbox_2_p2",
+            footnote_id=None,
+            old="ha diagranm%",
+            new="(se diagram)",
+            motivation="Regressionstest",
+            match_status="exact",
+        )
+
+        plans = ChangePlanner(
+            structure,
+            TokenDiffEngine(logger=self.logger),
+            self.logger,
+        ).build_plans([suggestion])
+        self.assertEqual(len(plans), 1)
+        with DocxPackage(str(source), self.logger) as package:
+            results = SimpleMarkupRenderer(package, self.logger).apply_plans(plans)
+            package.save(str(output))
+
+        self.assertTrue(results[0].applied, results[0].message)
+        paragraph = self._drawing_textbox_paragraphs(output, drawing_index=2)[1]
+        self.assertIn("ha diagranm%", self._all_text(paragraph))
+        self.assertIn("(se diagram)", self._all_text(paragraph))
 
     def test_legacy_textbox_id_resolves_to_first_paragraph_of_the_drawing(self):
         source = self.root / "textboxes.docx"
@@ -147,7 +183,10 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
         TextboxAndSpecialNodeTests._append_fallback(second, "Andra fallback")
         TextboxAndSpecialNodeTests._append_drawing(
             second,
-            ["Andra rutans första stycke", "ha diagranm%"],
+            [
+                ("Andra rutans första stycke", False),
+                ("ha diagranm%", True),
+            ],
         )
         document.save(path)
 
@@ -163,14 +202,31 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
     def _append_drawing(paragraph, texts):
         drawing = OxmlElement("w:drawing")
         content = OxmlElement("w:txbxContent")
-        for text in texts:
-            content.append(TextboxAndSpecialNodeTests._make_xml_paragraph(text))
+        for item in texts:
+            if isinstance(item, tuple):
+                text, with_tab_stop = item
+            else:
+                text, with_tab_stop = item, False
+            content.append(TextboxAndSpecialNodeTests._make_xml_paragraph(
+                text,
+                with_tab_stop=with_tab_stop,
+            ))
         drawing.append(content)
         paragraph._p.append(drawing)
 
     @staticmethod
-    def _make_xml_paragraph(text):
+    def _make_xml_paragraph(text, with_tab_stop=False):
         paragraph = OxmlElement("w:p")
+        if with_tab_stop:
+            properties = OxmlElement("w:pPr")
+            tabs = OxmlElement("w:tabs")
+            tab = OxmlElement("w:tab")
+            tab.set(f"{{{W_NS}}}val", "left")
+            tab.set(f"{{{W_NS}}}pos", "720")
+            tabs.append(tab)
+            properties.append(tabs)
+            paragraph.append(properties)
+
         run = OxmlElement("w:r")
         text_element = OxmlElement("w:t")
         text_element.text = text
