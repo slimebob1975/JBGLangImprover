@@ -33,6 +33,7 @@ Följ också dessa detaljerade riktlinjer:
 - Börja med det viktigaste och strukturera innehållet tydligt.
 - Använd rubriker och mellanrubriker som är korta, tydliga och innehåller relevanta sökord.
 - Rubrikerna ska vara meningsskapande, använda aktiva verb, nyckelord och förmedla ett budskap utan att vara ingresser.
+- Rubriker får aldrig avslutas med punkt.
 - Skriv i aktiv form när det går.
 - Använd korta stycken och blanda korta och långa meningar.
 - Undvik kommatecken där det är möjligt genom att skriva kortare meningar. Använd kommatering bara när det leder till ökad tydlighet.
