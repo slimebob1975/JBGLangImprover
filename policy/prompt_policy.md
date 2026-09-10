@@ -49,8 +49,8 @@ Följ också dessa detaljerade riktlinjer:
 
 ## Terminologi och fasta regler
 
-- När orden "arbetslöshetskassor" eller "arbetslöshetkassorna" nämns, använd hellre omskrivningarna "a-kassor" och "a-kassorna".
-- Ordet "arbetslöshetsförsäkringen" ska INTE skrivas om utan behållas intakt oavsett form eller sammanhang.
+- När orden "arbetslöshetskassor" eller "arbetslöshetkassorna" nämns, använd omskrivningarna "a-kassor" och "a-kassorna".
+- Orden "arbetslöshetsförsäkring" eller "arbetslöshetsförsäkringen" ska behållas intakt oavsett form eller sammanhang.
 
 ---
 
