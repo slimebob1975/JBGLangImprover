@@ -335,6 +335,40 @@ class ParseAndValidateTests(unittest.TestCase):
         self.assertEqual(result.findings[1].proposed_order, [])
         self.assertEqual(len(result.findings), 2)
 
+    def structure_with_fact_box(self):
+        # Testkörningen b391e3ac: faktarutan "IAF:s tillsyn" är en tabell före förordet
+        structure = json.loads(json.dumps(STRUCTURE))
+        structure["elements"] += [
+            _el("table_9_cell_1_1_p1", "table_cell", "IAF:s tillsyn", 1, 0,
+                style_name="IAF Rubrik 1 - ej i innehållsförteckningen"),
+            _el("table_9_cell_1_1_p2", "table_cell", "IAF ansvarar för tillsynen över a-kassorna.", None, 0),
+        ]
+        return structure
+
+    def test_disposition_must_sit_on_a_body_section_heading(self):
+        result = self.validate_in(
+            self.structure_with_fact_box(),
+            self.disposition(element_ids=["table_9_cell_1_1_p1", "paragraph_1"], quote="IAF:s tillsyn",
+                             proposed_order=["Sammanfattning", "IAF:s tillsyn"]),
+        )
+        self.assertEqual(result.findings, [])
+        self.assertEqual([r.reason for r in result.rejected], ["anchor_not_a_section_heading"])
+
+    def test_heading_suggestions_may_still_sit_on_a_fact_box_heading(self):
+        result = self.validate_in(
+            self.structure_with_fact_box(),
+            self.heading(element_ids=["table_9_cell_1_1_p1"], quote="IAF:s tillsyn"),
+        )
+        self.assertEqual(len(result.findings), 1, [r.reason for r in result.rejected])
+
+    def test_proposed_order_may_only_name_body_section_headings(self):
+        result = self.validate_in(
+            self.structure_with_fact_box(),
+            self.disposition(proposed_order=["IAF:s tillsyn", "Sammanfattning", "Resultat"]),
+        )
+        self.assertEqual(len(result.findings), 1)
+        self.assertEqual(result.findings[0].proposed_order, [])
+
     def test_disposition_and_heading_are_limited_to_five_each(self):
         # Sju unika rubrikförslag: samma rubrik, olika kombinationer av relaterade ställen
         related = ["paragraph_2", "paragraph_4", "paragraph_6", "paragraph_8", "paragraph_9",

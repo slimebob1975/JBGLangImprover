@@ -346,10 +346,12 @@ class JBGGlobalAnalyzerAI:
             if e.get("type") in OUTLINE_TYPES
         }
         elements = {e["element_id"]: e for e in structure.get("elements", [])}
+        # Föreslagen ordning får bara innehålla avsnittsrubriker i brödtexten,
+        # inte rubriker i faktarutor, tabeller eller textrutor.
         heading_texts = {
             self._normalize_heading(e.get("text") or ""): " ".join((e.get("text") or "").split())
             for e in structure.get("elements", [])
-            if e.get("type") in OUTLINE_TYPES and self._is_heading(e)
+            if is_section_heading(e)
         }
         seen: set[tuple[str, frozenset]] = set()
         per_category: dict[str, int] = {}
@@ -392,6 +394,12 @@ class JBGGlobalAnalyzerAI:
 
             if category in HEADING_ANCHOR_CATEGORIES and not self._is_heading(elements.get(anchor, {})):
                 result.rejected.append(RejectedFinding("anchor_not_a_heading", item))
+                continue
+            # Disposition gäller avsnitt: ankaret måste vara en avsnittsrubrik i
+            # brödtexten. Rubriker i faktarutor och tabeller (t.ex. en ruta på
+            # omslagets insida som ingår i mallen) är inte avsnitt.
+            if category == "disposition" and not is_section_heading(elements.get(anchor, {})):
+                result.rejected.append(RejectedFinding("anchor_not_a_section_heading", item))
                 continue
 
             if len(ids) < MIN_LOCATIONS.get(category, 2):

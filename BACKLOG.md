@@ -8,6 +8,7 @@
 - [ ] `TrackedChangesRenderer` starts revision ids at 1 regardless of existing revisions in the document, so ids can collide with tracked changes already in the source
 - [ ] Simple markup fails on some long rewrites in paragraphs with manual line breaks ("Invalid last_local_end" in `JBGSimpleMarkupRenderer`; test run b02ce006, paragraph_53 and paragraph_115). Tracked changes already handles anchors at line breaks; port the same fix and add a regression test
 - [ ] Global findings vary considerably between runs of the same document (e.g. a within-section repetition found in two runs and missing in the third); consider a lower temperature for the global call where the model allows it
+- [ ] Check whether template notes such as "Ta ej bort denna avsnittsbrytning!!" (test run b391e3ac, paragraph_127, flagged as "Troligt fel") are hidden or white text in the template. If so, the extractor should skip hidden text (`w:vanish`) so it is neither reviewed nor counted in LIX
 - [ ] Fixed 5 s pause between API calls (about 50 s of a 5.5 min run with 11 calls); replace with retry/backoff on rate-limit errors
 
 ## Planned improvments
@@ -77,6 +78,7 @@ Finding categories, to be implemented in this order:
   - Two categories, both comment-only and anchored on a heading (checked in code, `anchor_not_a_heading`): `disposition` ("Förslag om disposition. …": order, content under the wrong chapter, heading level vs content; optional `proposed_order`, verified against the document's real headings) and `heading` ("Förslag om rubrik. …": does the heading describe the section below it; optional example wording in the proposal)
   - Respectful tone and protected standard sections (förord, sammanfattning, inledning, källor, bilagor) are set in the policy; at most 5 findings per category, enforced in code (`MAX_PER_CATEGORY`)
   - A broken transition before a heading is only used as support for a disposition finding, never as a finding of its own
+  - Disposition findings must sit on a body section heading (`anchor_not_a_section_heading`), and `proposed_order` may only name such headings. Test run b391e3ac proposed moving the template fact box "IAF:s tillsyn" (a table before the Förord); headings in fact boxes, tables and text boxes are not sections. Heading suggestions may still sit on fact-box headings
   - Whether a claim in a message heading is supported by the text belongs to G3.d
 - [ ] G3.d Erroneous, irrelevant or unsupported (baseless) conclusions, with a reference to what is missing in the text
 - [ ] G3.e Further checks (e.g. missing summary, undefined abbreviations at first use, promised content that never appears)
