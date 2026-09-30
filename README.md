@@ -29,6 +29,7 @@ The current setup is optimized for Swedish plain-language review in formal publi
 
    - the raw suggestions JSON
    - the suggestion filter report
+   - the run summary JSON (`<file>_run_summary.json`): model, token usage per phase, suggestion counts and LIX before/after
    - session logs
    - output document files
 
@@ -242,6 +243,21 @@ http://127.0.0.1:8000
 ```
 
 From there you can upload a Word document, enter your OpenAI API key, choose a model and run the language improvement workflow.
+
+## Readability (LIX)
+
+LIX before and after the proposed changes is computed deterministically from the
+structure JSON and the suggestions JSON, without any model call:
+
+```bash
+python -m app.src.JBGReadabilityMetrics <file>_structure.json [<file>_suggestions.json]
+```
+
+LIX = words/sentences + 100 × long words (more than six letters)/words. Body
+paragraphs, table cells and textboxes are counted; headings, headers/footers and
+footnotes are not. The "after" value assumes that every accepted suggestion is
+applied. LIX is an indicator, not a quality score: a clearer rewrite can raise LIX
+when short words disappear.
 
 ## Running Regression Tests
 

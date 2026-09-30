@@ -49,6 +49,15 @@ class ExtractedElement:
     contains_tabs: bool = False
     may_contain_special_runs: bool = False
 
+    # Dokumentnivå-metadata (G0.2). Påverkar inte element_id.
+    # heading_level: 1-9 för rubriker (outline level + 1), 0 för dokumenttitel,
+    # None för brödtext. doc_order: löpande ordning i huvuddokumentets brödtext
+    # (stycken, tabellceller och textrutor); None för sidhuvud/sidfot/fotnoter.
+    style_id: Optional[str] = None
+    style_name: Optional[str] = None
+    heading_level: Optional[int] = None
+    doc_order: Optional[int] = None
+
 
 # ============================================================================
 # Extractor
@@ -81,9 +90,16 @@ class DocumentStructureExtractor:
 
         elements: list[ExtractedElement] = []
 
+        # Dokumentnivå: stilindex och verklig blockordning i w:body.
+        self._style_index = self._build_style_index(doc)
+        paragraph_blocks, table_blocks = self._body_block_positions(doc)
+        order_keys: dict[str, tuple] = {}
+
         # 1. Paragraphs in main document
         for i, para in enumerate(doc.paragraphs, start=1):
             text = para.text or ""
+            style_id, style_name, heading_level = self._paragraph_style_info(para._element)
+            order_keys[f"paragraph_{i}"] = (paragraph_blocks.get(i), 0, 0)
             elements.append(ExtractedElement(
                 type="paragraph",
                 element_id=f"paragraph_{i}",
@@ -95,10 +111,14 @@ class DocumentStructureExtractor:
                 contains_linebreaks="\n" in text,
                 contains_tabs="\t" in text,
                 may_contain_special_runs=self._paragraph_may_contain_special_runs(para),
+                style_id=style_id,
+                style_name=style_name,
+                heading_level=heading_level,
             ))
 
         # 2. Tables in main document
         for ti, table in enumerate(doc.tables, start=1):
+            cell_sequence = 0
             for ri, row in enumerate(table.rows, start=1):
                 for ci, cell in enumerate(row.cells, start=1):
                     # A cell may contain several paragraphs.  Expose each
@@ -106,9 +126,13 @@ class DocumentStructureExtractor:
                     # anchor that crosses an OOXML paragraph boundary.
                     for pi, para in enumerate(cell.paragraphs, start=1):
                         paragraph_text = para.text or ""
+                        cell_element_id = f"table_{ti}_cell_{ri}_{ci}_p{pi}"
+                        style_id, style_name, heading_level = self._paragraph_style_info(para._element)
+                        cell_sequence += 1
+                        order_keys[cell_element_id] = (table_blocks.get(ti), 0, cell_sequence)
                         elements.append(ExtractedElement(
                             type="table_cell",
-                            element_id=f"table_{ti}_cell_{ri}_{ci}_p{pi}",
+                            element_id=cell_element_id,
                             text=paragraph_text,
                             empty=not bool(paragraph_text.strip()),
                             part_name="word/document.xml",
@@ -123,6 +147,9 @@ class DocumentStructureExtractor:
                             contains_linebreaks="\n" in paragraph_text,
                             contains_tabs="\t" in paragraph_text,
                             may_contain_special_runs=self._paragraph_may_contain_special_runs(para),
+                            style_id=style_id,
+                            style_name=style_name,
+                            heading_level=heading_level,
                         ))
 
         # 3. Headers and footers. Resolve the actual relationship target and
@@ -139,11 +166,17 @@ class DocumentStructureExtractor:
                     box_info["paragraph_texts"],
                     start=1,
                 ):
+                    textbox_element_id = (
+                        f"textbox_{textbox_counter}_p{textbox_paragraph_index}"
+                    )
+                    # Textrutor sorteras direkt efter sitt värdstycke.
+                    order_keys[textbox_element_id] = (
+                        paragraph_blocks.get(pi), 1,
+                        textbox_counter * 10000 + textbox_paragraph_index,
+                    )
                     elements.append(ExtractedElement(
                         type="textbox",
-                        element_id=(
-                            f"textbox_{textbox_counter}_p{textbox_paragraph_index}"
-                        ),
+                        element_id=textbox_element_id,
                         text=textbox_text,
                         empty=not bool(textbox_text.strip()),
                         part_name="word/document.xml",
@@ -178,8 +211,131 @@ class DocumentStructureExtractor:
                 may_contain_special_runs=True,
             ))
 
+        self._assign_doc_order(elements, order_keys)
+
         structure["elements"] = [asdict(e) for e in elements]
         return structure
+
+    # ------------------------------------------------------------------
+    # Dokumentnivå: stilar, rubriknivåer och blockordning (G0.2)
+    # ------------------------------------------------------------------
+
+    HEADING_NAME_RE = re.compile(r"^(?:heading|rubrik)\s*([1-9])$", re.IGNORECASE)
+    TITLE_NAMES = {"title", "rubrik"}
+
+    def _build_style_index(self, doc) -> dict[str, Any]:
+        """
+        Returnerar {"styles": {style_id: {...}}, "default_paragraph": style_id|None}.
+        Läser styles.xml direkt så att outlineLvl och basedOn-kedjor följs,
+        oavsett språkversion av Word (Heading1/Rubrik1/egna stilar).
+        """
+        index: dict[str, Any] = {"styles": {}, "default_paragraph": None}
+        try:
+            styles_root = doc.styles.element
+        except Exception as ex:
+            self.logger.warning(f"Could not read styles.xml: {ex}")
+            return index
+
+        w = f"{{{W_NS}}}"
+        for style in styles_root.findall(f"{w}style"):
+            if style.get(f"{w}type") != "paragraph":
+                continue
+            style_id = style.get(f"{w}styleId")
+            if not style_id:
+                continue
+            name_el = style.find(f"{w}name")
+            based_on_el = style.find(f"{w}basedOn")
+            outline_el = style.find(f"{w}pPr/{w}outlineLvl")
+            index["styles"][style_id] = {
+                "name": name_el.get(f"{w}val") if name_el is not None else None,
+                "based_on": based_on_el.get(f"{w}val") if based_on_el is not None else None,
+                "outline_level": self._int_or_none(
+                    outline_el.get(f"{w}val") if outline_el is not None else None
+                ),
+            }
+            if style.get(f"{w}default") in {"1", "true", "on"}:
+                index["default_paragraph"] = style_id
+        return index
+
+    def _paragraph_style_info(self, p_element) -> tuple[Optional[str], Optional[str], Optional[int]]:
+        """Returnerar (style_id, style_name, heading_level) för ett w:p-element."""
+        index = getattr(self, "_style_index", None) or {"styles": {}, "default_paragraph": None}
+        styles = index["styles"]
+        w = f"{{{W_NS}}}"
+
+        style_el = p_element.find(f"{w}pPr/{w}pStyle")
+        style_id = style_el.get(f"{w}val") if style_el is not None else None
+        if not style_id:
+            style_id = index["default_paragraph"]
+        style_name = styles.get(style_id, {}).get("name") if style_id else None
+
+        # 1. Direkt formatering i stycket vinner.
+        direct_el = p_element.find(f"{w}pPr/{w}outlineLvl")
+        outline = self._int_or_none(direct_el.get(f"{w}val")) if direct_el is not None else None
+
+        # 2. Annars stilkedjan (basedOn), med skydd mot cykler.
+        if outline is None and style_id:
+            seen = set()
+            current = style_id
+            while current and current not in seen and current in styles:
+                seen.add(current)
+                outline = styles[current]["outline_level"]
+                if outline is not None:
+                    break
+                current = styles[current]["based_on"]
+
+        if outline is not None:
+            # 0-8 = rubriknivå 1-9; 9 = uttryckligen brödtext.
+            return style_id, style_name, (outline + 1 if 0 <= outline <= 8 else None)
+
+        # 3. Reserv: stilnamn (inbyggda namn lagras på engelska i styles.xml).
+        name = (style_name or "").strip()
+        match = self.HEADING_NAME_RE.match(name)
+        if match:
+            return style_id, style_name, int(match.group(1))
+        if name.lower() in self.TITLE_NAMES:
+            return style_id, style_name, 0
+        return style_id, style_name, None
+
+    def _body_block_positions(self, doc) -> tuple[dict[int, int], dict[int, int]]:
+        """
+        Mappar paragraph_index/table_index (1-baserade, samma numrering som
+        doc.paragraphs/doc.tables) till position bland w:body:s barn.
+        """
+        paragraph_blocks: dict[int, int] = {}
+        table_blocks: dict[int, int] = {}
+        p_count = t_count = 0
+        for position, child in enumerate(doc.element.body.iterchildren()):
+            if child.tag == f"{{{W_NS}}}p":
+                p_count += 1
+                paragraph_blocks[p_count] = position
+            elif child.tag == f"{{{W_NS}}}tbl":
+                t_count += 1
+                table_blocks[t_count] = position
+
+        if p_count != len(doc.paragraphs) or t_count != len(doc.tables):
+            self.logger.warning(
+                "Body block count mismatch; doc_order will not be assigned "
+                f"(paragraphs {p_count}/{len(doc.paragraphs)}, tables {t_count}/{len(doc.tables)})"
+            )
+            return {}, {}
+        return paragraph_blocks, table_blocks
+
+    def _assign_doc_order(self, elements: list[ExtractedElement], order_keys: dict[str, tuple]) -> None:
+        ordered = [
+            e for e in elements
+            if e.element_id in order_keys and order_keys[e.element_id][0] is not None
+        ]
+        ordered.sort(key=lambda e: order_keys[e.element_id])
+        for position, element in enumerate(ordered, start=1):
+            element.doc_order = position
+
+    @staticmethod
+    def _int_or_none(value) -> Optional[int]:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _extract_header_footer_elements(self) -> list[ExtractedElement]:
         elements: list[ExtractedElement] = []

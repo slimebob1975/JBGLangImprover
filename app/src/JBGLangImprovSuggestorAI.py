@@ -289,6 +289,8 @@ class JBGLangImprovSuggestorAI:
         strict_validation=True,
         allow_normalized_matches=True,
         quality_filter=None,
+        usage_tracker=None,
+        usage_phase="local",
     ):
         self.api_key = api_key
         self.model = model
@@ -308,6 +310,10 @@ class JBGLangImprovSuggestorAI:
         self.filtered_review: list[FilteredSuggestion] = []
 
         self.quality_filter = quality_filter or SuggestionQualityFilter(logger=self.logger)
+
+        # Valfri tokenräkning (UsageTracker). None = ingen räkning.
+        self.usage_tracker = usage_tracker
+        self.usage_phase = usage_phase
 
     def _report(self, message: str):
         self.logger.info(message)
@@ -462,11 +468,24 @@ class JBGLangImprovSuggestorAI:
             raise ValueError("No structure loaded. Call load_structure() first.")
 
     def _call_model(self, client, messages):
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+            )
+        except Exception:
+            if self.usage_tracker is not None:
+                self.usage_tracker.record_failure(self.usage_phase, self.model)
+            raise
+
+        usage = getattr(response, "usage", None)
+        if self.usage_tracker is not None:
+            rec = self.usage_tracker.record(self.usage_phase, self.model, usage)
+            self.logger.info(
+                f"Token usage ({self.usage_phase}): prompt={rec.prompt_tokens}, "
+                f"completion={rec.completion_tokens}, reasoning={rec.reasoning_tokens}"
+            )
         return response.choices[0].message.content or "[]"
 
     def _build_user_message_for_chunk(self, chunk):

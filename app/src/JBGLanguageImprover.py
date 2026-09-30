@@ -13,6 +13,12 @@ try:
     from app.src.JBGDocxPackage import DocxPackage
     from app.src.JBGSimpleMarkupRenderer import SimpleMarkupRenderer
     from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
+    from app.src.JBGUsageTracker import UsageTracker
+    from app.src.JBGRunSummary import RunSummary
+    from app.src.JBGReadabilityMetrics import (
+        compute_document_readability,
+        compute_document_readability_from_files,
+    )
 except ModuleNotFoundError:
     from JBGDocumentStructureExtractor import DocumentStructureExtractor
     from JBGLangImprovSuggestorAI import JBGLangImprovSuggestorAI
@@ -20,6 +26,12 @@ except ModuleNotFoundError:
     from JBGDocxPackage import DocxPackage
     from JBGSimpleMarkupRenderer import SimpleMarkupRenderer
     from JBGTrackedChangesRenderer import TrackedChangesRenderer
+    from JBGUsageTracker import UsageTracker
+    from JBGRunSummary import RunSummary
+    from JBGReadabilityMetrics import (
+        compute_document_readability,
+        compute_document_readability_from_files,
+    )
 
 
 class JBGLanguageImprover:
@@ -78,6 +90,18 @@ class JBGLanguageImprover:
         self.filter_report_json = input_path.replace(
             os.path.splitext(input_path)[1], "_suggestion_filter_report.json"
         )
+        self.run_summary_json = input_path.replace(
+            os.path.splitext(input_path)[1], "_run_summary.json"
+        )
+
+        self.usage_tracker = UsageTracker()
+        self.run_summary = RunSummary(
+            input_filename=os.path.basename(input_path),
+            model=model,
+            docx_mode=self.docx_mode,
+            temperature=temperature,
+            include_motivations=bool(include_motivations),
+        )
 
         self.structure = None
         self.validated_suggestions = []
@@ -97,21 +121,32 @@ class JBGLanguageImprover:
                 "för test av den ombyggda Word-pipelinen."
             )
 
-        self._report("Analyserar dokumentets struktur...")
-        self.structure = self._extract_structure()
+        try:
+            self._report("Analyserar dokumentets struktur...")
+            self.structure = self._extract_structure()
 
-        self._report("Skickar dokumentet till språkmodellen för förslag...")
-        self.validated_suggestions = self._generate_suggestions()
+            self._report("Skickar dokumentet till språkmodellen för förslag...")
+            self.validated_suggestions = self._generate_suggestions()
 
-        self._report("Bygger ändringsplan...")
-        self.change_plans = self._build_change_plans()
+            self._report("Beräknar läsbarhet (LIX) före och efter...")
+            self._compute_readability()
 
-        if self.docx_mode == "tracked":
-            self._report("Applicerar spåra ändringar i Word-dokumentet...")
+            self._report("Bygger ändringsplan...")
+            self.change_plans = self._build_change_plans()
+
+            if self.docx_mode == "tracked":
+                self._report("Applicerar spåra ändringar i Word-dokumentet...")
+            else:
+                self._report("Applicerar enkel markup i Word-dokumentet...")
+
+            final_output_path = self._render_docx(output_path=output_path)
+        except Exception as ex:
+            self.run_summary.finish(succeeded=False, error=str(ex))
+            raise
         else:
-            self._report("Applicerar enkel markup i Word-dokumentet...")
-
-        final_output_path = self._render_docx(output_path=output_path)
+            self.run_summary.finish(succeeded=True)
+        finally:
+            self._save_run_summary()
 
         self._report("Klart.")
         return final_output_path
@@ -144,6 +179,8 @@ class JBGLanguageImprover:
             progress_callback=self.progress_callback,
             strict_validation=True,
             allow_normalized_matches=True,
+            usage_tracker=self.usage_tracker,
+            usage_phase="local",
         )
 
         # Suggestorn arbetar mot strukturfilen
@@ -160,8 +197,51 @@ class JBGLanguageImprover:
             self.logger.info(f"Saved validated suggestions JSON: {suggestions_path}")
             self.logger.info(f"Saved suggestion filter report: {filter_report_path}")
 
+        counts = self.run_summary.local_suggestions
+        counts.raw = len(ai.json_suggestions or [])
+        counts.validated = len(ai.filtered_review)
+        counts.accepted = len(ai.validated_suggestions)
+
         self.logger.info(f"Validated suggestions count: {len(ai.validated_suggestions)}")
+        self._accepted_suggestion_dicts = [
+            ai._suggested_change_to_output_dict(s) for s in ai.validated_suggestions
+        ]
         return ai.validated_suggestions
+
+    # ------------------------------------------------------------------
+    # Steg 2b: Läsbarhet (LIX) - deterministiskt, enbart från JSON
+    # ------------------------------------------------------------------
+
+    def _compute_readability(self):
+        """
+        LIX före/efter beräknas från strukturfilen och förslagsfilen.
+        Fel här får aldrig stoppa körningen.
+        """
+        try:
+            if (
+                self.save_intermediate_json
+                and os.path.exists(self.structure_json)
+                and os.path.exists(self.suggestions_json)
+            ):
+                report = compute_document_readability_from_files(
+                    self.structure_json, self.suggestions_json
+                )
+            else:
+                report = compute_document_readability(
+                    self.structure, getattr(self, "_accepted_suggestion_dicts", [])
+                )
+        except Exception as ex:
+            self.logger.warning(f"Readability computation failed: {ex}")
+            return None
+
+        data = report.to_dict()
+        self.run_summary.readability = data
+        self.logger.info(
+            f"LIX before: {data['before']['lix']} ({data['before']['band']}), "
+            f"LIX after: {data['after']['lix']} ({data['after']['band']}), "
+            f"delta: {data['lix_delta']}"
+        )
+        return data
 
     # ------------------------------------------------------------------
     # Steg 3: Planning
@@ -176,6 +256,7 @@ class JBGLanguageImprover:
         )
 
         plans = planner.build_plans(self.validated_suggestions)
+        self.run_summary.local_suggestions.planned = len(plans)
 
         self.logger.info(f"Built change plans: {len(plans)}")
 
@@ -226,6 +307,11 @@ class JBGLanguageImprover:
         applied_count = len([r for r in self.render_results if r.applied])
         failed_count = len([r for r in self.render_results if not r.applied])
 
+        counts = self.run_summary.local_suggestions
+        counts.applied = applied_count
+        counts.failed = failed_count
+        counts.comments_applied = len([r for r in self.comment_results if r.applied])
+
         self.logger.info(f"Render mode: {self.docx_mode}")
         self.logger.info(f"Render applied: {applied_count}")
         self.logger.info(f"Render skipped/failed: {failed_count}")
@@ -241,6 +327,22 @@ class JBGLanguageImprover:
     # ------------------------------------------------------------------
     # Hjälpare
     # ------------------------------------------------------------------
+
+    def _save_run_summary(self):
+        self.run_summary.usage = self.usage_tracker.to_dict()
+        total = self.run_summary.usage.get("total", {})
+        self.logger.info(
+            f"Token usage total: calls={total.get('calls', 0)}, "
+            f"prompt={total.get('prompt_tokens', 0)}, "
+            f"completion={total.get('completion_tokens', 0)}"
+        )
+        if not self.save_intermediate_json:
+            return
+        try:
+            path = self.run_summary.save(self.run_summary_json)
+            self.logger.info(f"Saved run summary JSON: {path}")
+        except Exception as ex:
+            self.logger.warning(f"Could not save run summary: {ex}")
 
     def _report(self, message: str):
         self.logger.info(message)
