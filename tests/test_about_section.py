@@ -118,6 +118,23 @@ def _body(docx_path):
         return etree.fromstring(z.read("word/document.xml")).find(f"{W}body")
 
 
+def _about_heading(body):
+    return next(p for p in body.findall(f"{W}p")
+                if "".join(t.text or "" for t in p.iter(f"{W}t")) == ABOUT_HEADING)
+
+
+def about_tables(body):
+    """Tabellerna i Om klarspråkningen som listor av rader med celltext."""
+    heading = _about_heading(body)
+    children = list(body)
+    tables = [c for c in children[children.index(heading):] if c.tag == f"{W}tbl"]
+    return [
+        [["".join(t.text or "" for t in tc.iter(f"{W}t")) for tc in tr.findall(f"{W}tc")]
+         for tr in table.findall(f"{W}tr")]
+        for table in tables
+    ]
+
+
 def _normalized(element):
     clone = copy.deepcopy(element)
     for node in clone.iter():
@@ -129,7 +146,16 @@ def _normalized(element):
 
 
 def reject_all_insertions(body):
-    """Som Words 'Avvisa alla infogningar': infogad text och styckemarkeringar försvinner."""
+    """
+    Som Words 'Avvisa alla infogningar': infogade tabellrader, text och
+    styckemarkeringar försvinner. En tabell utan rader försvinner helt.
+    """
+    for tr in list(body.iter(f"{W}tr")):
+        if tr.find(f"{W}trPr/{W}ins") is not None:
+            table = tr.getparent()
+            table.remove(tr)
+            if table.find(f"{W}tr") is None:
+                table.getparent().remove(table)
     for ins in list(body.iter(f"{W}ins")):
         if ins.getparent().tag != f"{W}rPr":
             ins.getparent().remove(ins)
@@ -181,36 +207,99 @@ class AboutSectionContentTests(unittest.TestCase):
     def texts(self, summary, tracked=True):
         return [block.text for block in build_about_section_blocks(summary, tracked=tracked)]
 
+    def table_after(self, blocks, title):
+        """Raderna i tabellen direkt efter tabellrubriken `title`."""
+        for index, block in enumerate(blocks):
+            if block.kind == "paragraph" and block.text == title:
+                table = blocks[index + 1]
+                self.assertEqual(table.kind, "table")
+                return table.rows
+        self.fail(f"No table titled {title!r}")
+
     def test_real_run_values_are_formatted_in_swedish(self):
-        texts = self.texts(REAL_RUN_SUMMARY)
+        blocks = build_about_section_blocks(REAL_RUN_SUMMARY, tracked=True)
+        texts = [b.text for b in blocks]
         self.assertEqual(texts[0], ABOUT_HEADING)
         for expected in (
             "Datum: 30 september 2026",
             "Språkmodell: gpt-5.2",
             "Visning av förslagen: Spåra ändringar med kommentarer",
             "Promptinstruktion: standard",
-            "Anrop till språkmodellen: 11",
-            f"Tokens skickade: 99{NBSP}322",
-            f"Tokens mottagna: 30{NBSP}939",
-            "Förslag från språkmodellen: 134",
-            "Förslag som klarade kontrollerna: 91",
-            "Förslag som förts in i dokumentet: 91",
-            "Läsbarhet (LIX) före: 51,7 (svår)",
-            "Läsbarhet (LIX) om alla förslag godtas: 51,6 (svår)",
         ):
             self.assertIn(expected, texts)
-        self.assertIn("avvisa ändringen", texts[1])
-        self.assertFalse(any("resonemang" in t for t in texts))
-        self.assertFalse(any("inte kunde föras in" in t for t in texts))
+
+        self.assertEqual(self.table_after(blocks, "Anrop och tokens"), [
+            ["", "Totalt"],
+            ["Anrop till språkmodellen", "11"],
+            ["Tokens skickade", f"99{NBSP}322"],
+            ["Tokens mottagna", f"30{NBSP}939"],
+        ])
+        self.assertEqual(self.table_after(blocks, "Förslag"), [
+            ["Lokala förslag", "Antal"],
+            ["Förslag från språkmodellen", "134"],
+            ["Förslag som klarade kontrollerna", "91"],
+            ["Förslag som förts in i dokumentet", "91"],
+        ])
+        self.assertEqual(self.table_after(blocks, "Läsbarhet (LIX)"), [
+            ["Del av dokumentet", "Före", "Om alla förslag godtas", "Förändring"],
+            ["Hela dokumentet", "51,7 (svår)", "51,6 (svår)", "\u22120,1"],
+        ])
+        # Avsnittet slutar med ett stycke (bokmärkets slut) med instruktionen
+        self.assertEqual(blocks[-1].kind, "paragraph")
+        self.assertIn("avvisa ändringen", blocks[-1].text)
+        # Tabellrubriker hålls ihop med tabellen
+        self.assertTrue(all(b.keep_with_next for b in blocks
+                            if b.kind == "paragraph" and b.text in ("Anrop och tokens", "Förslag", "Läsbarhet (LIX)")))
 
     def test_cached_tokens_are_shown_when_present(self):
         # Testkörningen ba144f3d: 56 704 av 60 817 tokens kom från cache
         summary = json.loads(json.dumps(REAL_RUN_SUMMARY))
         summary["usage"]["total"].update(prompt_tokens=60817, cached_prompt_tokens=56704)
-        texts = self.texts(summary)
-        self.assertIn(
-            f"Tokens skickade: 60{NBSP}817, varav 56{NBSP}704 återanvända (lägre kostnad)", texts
-        )
+        rows = self.table_after(build_about_section_blocks(summary, tracked=True), "Anrop och tokens")
+        self.assertIn(["Tokens skickade", f"60{NBSP}817"], rows)
+        self.assertIn(["varav återanvända (lägre kostnad)", f"56{NBSP}704"], rows)
+
+    def test_usage_table_has_one_column_per_phase_and_a_total(self):
+        summary = json.loads(json.dumps(REAL_RUN_SUMMARY))
+        summary["usage"]["by_phase"] = {
+            "local": {"calls": 7, "prompt_tokens": 60817, "completion_tokens": 22809},
+            "global": {"calls": 1, "prompt_tokens": 12925, "completion_tokens": 799},
+        }
+        summary["usage"]["total"] = {"calls": 8, "prompt_tokens": 73742, "completion_tokens": 23608}
+        rows = self.table_after(build_about_section_blocks(summary, tracked=True), "Anrop och tokens")
+        self.assertEqual(rows[0], ["", "Lokal granskning", "Global granskning", "Totalt"])
+        self.assertEqual(rows[1], ["Anrop till språkmodellen", "7", "1", "8"])
+        self.assertEqual(rows[2], ["Tokens skickade", f"60{NBSP}817", f"12{NBSP}925", f"73{NBSP}742"])
+
+    def test_lix_table_lists_every_chapter_with_signed_change(self):
+        summary = json.loads(json.dumps(REAL_RUN_SUMMARY))
+        summary["readability"]["sections"] = [
+            {"heading": None, "before": {"lix": 59.0}, "after": {"lix": 56.6}},
+            {"heading": "Källor", "before": {"lix": 36.0}, "after": {"lix": 36.9}},
+            {"heading": "Resultat", "before": {"lix": 53.1}, "after": {"lix": 53.1}},
+            {"heading": "Bilaga 2", "before": {"lix": None}, "after": {"lix": None}},
+        ]
+        rows = self.table_after(build_about_section_blocks(summary, tracked=True), "Läsbarhet (LIX)")
+        self.assertEqual(rows[2:], [
+            ["Före första rubriken", "59,0", "56,6", "\u22122,4"],
+            ["Källor", "36,0", "36,9", "+0,9"],
+            ["Resultat", "53,1", "53,1", "0,0"],
+            ["Bilaga 2", "–", "–", "–"],
+        ])
+
+    def test_global_findings_table(self):
+        summary = json.loads(json.dumps(REAL_RUN_SUMMARY))
+        summary["global_review"] = True
+        summary["global_findings"] = {"accepted": 3, "by_category": {"repetition": 2, "heading": 1}}
+        blocks = build_about_section_blocks(summary, tracked=True)
+        self.assertEqual(self.table_after(blocks, "Iakttagelser från den globala granskningen"), [
+            ["Kategori", "Antal"], ["Upprepningar", "2"], ["Förslag om rubriker", "1"], ["Totalt", "3"],
+        ])
+        self.assertIn("Iakttagelserna finns som kommentarer i dokumentet.", [b.text for b in blocks])
+
+        summary["global_findings"] = {"accepted": 0, "errors": ["boom"]}
+        texts = [b.text for b in build_about_section_blocks(summary, tracked=True)]
+        self.assertIn("Den globala granskningen kunde inte genomföras.", texts)
 
     def test_labels_are_bold_and_values_are_not(self):
         blocks = build_about_section_blocks(REAL_RUN_SUMMARY, tracked=True)
@@ -224,16 +313,18 @@ class AboutSectionContentTests(unittest.TestCase):
         summary["readability"] = None
         summary["usage"]["total"].update(reasoning_tokens=1200, failed_calls=1)
         summary["local_suggestions"]["failed"] = 2
-        texts = self.texts(summary, tracked=False)
+        blocks = build_about_section_blocks(summary, tracked=False)
+        texts = [b.text for b in blocks]
 
         self.assertIn("Visning av förslagen: Enkel färgmarkering", texts)
-        self.assertIn(f"Tokens mottagna: 30{NBSP}939, varav 1{NBSP}200 för resonemang", texts)
-        self.assertIn("Anrop till språkmodellen: 11, varav 1 misslyckades", texts)
-        self.assertIn(f"Tokens skickade: 99{NBSP}322", texts)   # inga cachade tokens
-        self.assertIn("Förslag som inte kunde föras in: 2", texts)
+        usage = self.table_after(blocks, "Anrop och tokens")
+        self.assertIn(["varav misslyckade", "1"], usage)
+        self.assertIn(["varav för resonemang", f"1{NBSP}200"], usage)
+        self.assertNotIn("varav återanvända (lägre kostnad)", [row[0] for row in usage])
+        self.assertIn(["Förslag som inte kunde föras in", "2"], self.table_after(blocks, "Förslag"))
         self.assertFalse(any(t.startswith("Promptinstruktion") for t in texts))
-        self.assertFalse(any("LIX" in t for t in texts))
-        self.assertIn("ta bort avsnittet när granskningen är klar", texts[1])
+        self.assertNotIn("Läsbarhet (LIX)", texts)
+        self.assertIn("ta bort avsnittet när granskningen är klar", blocks[-1].text)
 
 
 # ============================================================================
@@ -268,10 +359,9 @@ class AboutSectionRenderingTests(unittest.TestCase):
         children = list(body)
         self.assertEqual(children[-1].tag, f"{W}sectPr")
 
-        paragraphs = body.findall(f"{W}p")
-        section = paragraphs[-len(blocks):]
-        self.assertEqual(paragraphs[-len(blocks) - 1].findtext(f".//{W}t"), "Telefon 010-123 45 67")
-        heading_ppr = section[0].find(f"{W}pPr")
+        heading = _about_heading(body)
+        self.assertEqual(heading.getprevious().findtext(f".//{W}t"), "Telefon 010-123 45 67")
+        heading_ppr = heading.find(f"{W}pPr")
         self.assertEqual(heading_ppr.find(f"{W}pStyle").get(f"{W}val"), "IAFBilagerubrik1")
         self.assertIsNotNone(heading_ppr.find(f"{W}pageBreakBefore"))
         self.assertEqual(list(body.iter(f"{W}ins")), [])
@@ -297,7 +387,7 @@ class AboutSectionRenderingTests(unittest.TestCase):
         output = self.root / "out.docx"
         blocks, result = self.render(self.source, output, tracked=False)
         self.assertEqual(result.heading_style_id, "Kapitel")
-        heading = _body(output).findall(f"{W}p")[-len(blocks)]
+        heading = _about_heading(_body(output))
         self.assertEqual(heading.find(f"{W}pPr/{W}numPr/{W}numId").get(f"{W}val"), "0")
 
     def test_bold_fallback_when_the_document_has_no_heading_styles(self):
@@ -312,7 +402,7 @@ class AboutSectionRenderingTests(unittest.TestCase):
         output = self.root / "out.docx"
         blocks, result = self.render(self.source, output, tracked=False)
         self.assertIsNone(result.heading_style_id)
-        heading = _body(output).findall(f"{W}p")[-len(blocks)]
+        heading = _about_heading(_body(output))
         self.assertIsNone(heading.find(f"{W}pPr/{W}pStyle"))
         self.assertIsNotNone(heading.find(f"{W}r/{W}rPr/{W}b"))
 
@@ -531,9 +621,9 @@ class AboutSectionRulesForAllDocumentsTests(unittest.TestCase):
         heading = self._heading(body)
         section_start = children.index(heading)
         tail = children[section_start:]
-        # Avsnittets stycken plus högst ett avslutande tomt stycke
-        self.assertIn(len(tail), (len(blocks), len(blocks) + 1))
-        self.assertTrue(all(c.tag == f"{W}p" for c in tail))
+        # Avsnittets stycken och tabeller i ordning, plus högst ett avslutande tomt stycke
+        expected = [f"{W}tbl" if b.kind == "table" else f"{W}p" for b in blocks]
+        self.assertIn([c.tag for c in tail], (expected, expected + [f"{W}p"]))
         self.assertEqual(list(body)[-1].tag, f"{W}sectPr")
         self.assertIsNotNone(heading.find(f"{W}pPr/{W}pageBreakBefore"))
 
@@ -555,13 +645,20 @@ class AboutSectionRulesForAllDocumentsTests(unittest.TestCase):
                     self.assert_last(body, blocks)
                     self.assert_unnumbered(self._heading(body))
 
-                    section_texts = {text for b in blocks for text, _ in b.runs}
-                    section_runs = [r for r in body.iter(f"{W}r")
-                                    if (r.findtext(f"{W}t") or "") in section_texts]
-                    self.assertEqual(len(section_runs), sum(len(b.runs) for b in blocks))
+                    children = [c for c in body if c.tag != f"{W}sectPr"]
+                    section = children[children.index(self._heading(body)):][:len(blocks)]
+                    section_runs = [r for element in section for r in element.iter(f"{W}r")]
+                    expected_runs = sum(
+                        len(b.runs) if b.kind != "table" else sum(len(row) for row in b.rows)
+                        for b in blocks
+                    )
+                    self.assertEqual(len(section_runs), expected_runs)
                     if tracked:
-                        # Regel 2: allt i avsnittet är spårat
+                        # Regel 2: allt i avsnittet är spårat, även tabellraderna
                         self.assertTrue(all(r.getparent().tag == f"{W}ins" for r in section_runs))
+                        rows = [tr for element in section for tr in element.iter(f"{W}tr")]
+                        self.assertTrue(rows)
+                        self.assertTrue(all(tr.find(f"{W}trPr/{W}ins") is not None for tr in rows))
                     else:
                         self.assertEqual(list(body.iter(f"{W}ins")), [])
 

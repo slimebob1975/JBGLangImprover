@@ -25,6 +25,7 @@ from app.src.JBGGlobalAnalyzerAI import (
 from app.src.JBGGlobalFindingsRenderer import GlobalFindingsRenderer
 from app.src.JBGLanguageImprover import JBGLanguageImprover
 from app.src.JBGUsageTracker import UsageTracker
+from tests.test_about_section import about_tables
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -639,12 +640,11 @@ class GlobalReviewEndToEndTests(unittest.TestCase):
                 self.assertEqual(summary.global_findings["by_category"], {"repetition": 1})
                 self.assertEqual(summary.usage["by_phase"]["global"]["prompt_tokens"], 3000)
 
-                texts = ["".join(t.text or "" for t in p.iter(f"{W}t")) for p in _body(output).findall(f"{W}p")]
-                self.assertIn(
-                    "Iakttagelser från den globala granskningen: 1 (upprepningar: 1), som kommentarer i dokumentet",
-                    texts,
-                )
-                self.assertIn("Anrop till språkmodellen: 2 (1 lokala, 1 för global granskning)", texts)
+                tables = about_tables(_body(output))
+                self.assertIn([["Kategori", "Antal"], ["Upprepningar", "1"], ["Totalt", "1"]], tables)
+                usage = next(t for t in tables if t[0][0] == "")
+                self.assertEqual(usage[0], ["", "Lokal granskning", "Global granskning", "Totalt"])
+                self.assertEqual(usage[1], ["Anrop till språkmodellen", "1", "1", "2"])
 
                 saved = json.loads(Path(improver.global_findings_json).read_text(encoding="utf-8"))
                 self.assertEqual(saved["summary"]["accepted"], 1)
@@ -670,11 +670,10 @@ class GlobalReviewEndToEndTests(unittest.TestCase):
                          {"repetition": 1, "inconsistency": 1, "error": 1})
         comments = [" ".join(lines) for lines in _comments(output).values()]
         self.assertTrue(any(c.startswith("Inkonsekvent påstående. Perioden beskrivs olika.") for c in comments))
-        texts = ["".join(t.text or "" for t in p.iter(f"{W}t")) for p in _body(output).findall(f"{W}p")]
         self.assertIn(
-            "Iakttagelser från den globala granskningen: 3 (upprepningar: 1, inkonsekvenser: 1, "
-            "troliga fel: 1), som kommentarer i dokumentet",
-            texts,
+            [["Kategori", "Antal"], ["Upprepningar", "1"], ["Inkonsekvenser", "1"],
+             ["Troliga fel", "1"], ["Totalt", "3"]],
+            about_tables(_body(output)),
         )
 
     def test_no_global_call_when_unchecked(self):
@@ -689,12 +688,11 @@ class GlobalReviewEndToEndTests(unittest.TestCase):
         self.assertEqual(improver.run_summary.global_findings["accepted"], 0)
         self.assertTrue(improver.run_summary.global_findings["errors"])
         texts = ["".join(t.text or "" for t in p.iter(f"{W}t")) for p in _body(output).findall(f"{W}p")]
-        self.assertIn("Iakttagelser från den globala granskningen: kunde inte genomföras", texts)
+        self.assertIn("Den globala granskningen kunde inte genomföras.", texts)
 
     def test_no_findings_is_reported_as_zero(self):
         improver, output, _ = self.run_improver('{"findings": []}')
-        texts = ["".join(t.text or "" for t in p.iter(f"{W}t")) for p in _body(output).findall(f"{W}p")]
-        self.assertIn("Iakttagelser från den globala granskningen: 0", texts)
+        self.assertIn([["Kategori", "Antal"], ["Totalt", "0"]], about_tables(_body(output)))
 
 
 if __name__ == "__main__":

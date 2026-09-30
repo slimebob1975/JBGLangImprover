@@ -103,7 +103,7 @@ class DocumentStructureExtractor:
         # Ett tidigare genererat avsnitt "Om klarspråkningen" granskas inte.
         # Det ligger sist i dokumentet, så numreringen av övriga stycken
         # påverkas inte när dess stycken hoppas över.
-        excluded_paragraphs = self._about_section_paragraph_indices(doc)
+        excluded_paragraphs, excluded_tables = self._about_section_indices(doc)
 
         # 1. Paragraphs in main document
         for i, para in enumerate(doc.paragraphs, start=1):
@@ -130,6 +130,8 @@ class DocumentStructureExtractor:
 
         # 2. Tables in main document
         for ti, table in enumerate(doc.tables, start=1):
+            if ti in excluded_tables:
+                continue
             cell_sequence = 0
             for ri, row in enumerate(table.rows, start=1):
                 for ci, cell in enumerate(row.cells, start=1):
@@ -311,16 +313,19 @@ class DocumentStructureExtractor:
             return style_id, style_name, 0
         return style_id, style_name, None
 
-    def _about_section_paragraph_indices(self, doc) -> set[int]:
-        """1-baserade index (som doc.paragraphs) för stycken i Om klarspråkningen."""
-        section_range = AboutSectionRenderer.find_section_range(doc.element.body)
-        if section_range is None:
-            return set()
-        start, end = section_range
-        self.logger.info(
-            f"Skipping existing 'Om klarspråkningen' section (paragraphs {start + 1}-{end + 1})"
-        )
-        return set(range(start + 1, end + 2))
+    def _about_section_indices(self, doc) -> tuple[set[int], set[int]]:
+        """
+        1-baserade index (som doc.paragraphs och doc.tables) för stycken och
+        tabeller i Om klarspråkningen. Avsnittet ligger sist, så övriga
+        element behåller sina id.
+        """
+        paragraphs, tables = AboutSectionRenderer.find_section_indices(doc.element.body)
+        if paragraphs or tables:
+            self.logger.info(
+                f"Skipping existing 'Om klarspråkningen' section "
+                f"({len(paragraphs)} paragraphs, {len(tables)} tables)"
+            )
+        return paragraphs, tables
 
     def _body_block_positions(self, doc) -> tuple[dict[int, int], dict[int, int]]:
         """

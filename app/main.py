@@ -170,8 +170,8 @@ async def upload_file(
     temperature: float = Form(0.7),
     include_motivations: bool = Form(True),
     docx_mode: str = Form("simple"),
-    include_about_section: bool = Form(True),
-    compute_lix: bool = Form(True),
+    include_about_section: bool = Form(False),
+    compute_lix: bool = Form(False),
     global_review: bool = Form(False),
 ):
     # Generate job ID and paths

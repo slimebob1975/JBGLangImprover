@@ -82,8 +82,18 @@ _PPR_TAIL_TAGS = (f"{W}sectPr", f"{W}pPrChange")
 
 @dataclass
 class AboutBlock:
-    kind: Literal["heading", "paragraph"]
+    """
+    Ett block i avsnittet:
+    - "heading": avsnittets rubrik
+    - "paragraph": stycke med körningar (text, fet); keep_with_next håller
+      en tabellrubrik ihop med tabellen
+    - "table": rows[0] är rubrikrad; numeric_columns högerställs
+    """
+    kind: Literal["heading", "paragraph", "table"]
     runs: list[tuple[str, bool]] = field(default_factory=list)  # (text, fet)
+    rows: list[list[str]] = field(default_factory=list)
+    numeric_columns: tuple[int, ...] = ()
+    keep_with_next: bool = False
 
     @property
     def text(self) -> str:
@@ -121,28 +131,137 @@ def _item(label: str, value: str) -> AboutBlock:
     return AboutBlock("paragraph", [(f"{label}: ", True), (value, False)])
 
 
-def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]:
-    """Bygger avsnittets innehåll från RunSummary.to_dict() (med usage ifylld)."""
-    blocks = [AboutBlock("heading", [(ABOUT_HEADING, False)])]
+def _fmt_delta(before: Optional[float], after: Optional[float]) -> str:
+    """Förändring beräknad från de avrundade värdena, med typografiskt minustecken."""
+    if before is None or after is None:
+        return "–"
+    delta = round(round(after, 1) - round(before, 1), 1)
+    if delta == 0:
+        return "0,0"
+    sign = "+" if delta > 0 else "\u2212"
+    return f"{sign}{abs(delta):.1f}".replace(".", ",")
 
-    intro = (
+
+def _fmt_lix_value(value: Optional[float]) -> str:
+    return "–" if value is None else f"{float(value):.1f}".replace(".", ",")
+
+
+def _table_title(text: str) -> AboutBlock:
+    return AboutBlock("paragraph", [(text, True)], keep_with_next=True)
+
+
+PHASE_NAMES = (("local", "Lokal granskning"), ("global", "Global granskning"))
+
+LIX_EXPLANATION = (
+    "LIX (läsbarhetsindex) bygger på meningarnas längd och andelen ord med fler "
+    "än sex bokstäver. Rubriker, sidhuvuden, sidfötter och fotnoter räknas inte med. "
+    "Riktvärden: under 30 mycket lättläst, 30–40 lättläst, 40–50 medelsvår, "
+    "50–60 svår och över 60 mycket svår. LIX säger inget om hur begriplig texten "
+    "är i övrigt, och en tydligare formulering kan ibland ge ett högre värde."
+)
+
+
+def _usage_table(usage: dict) -> AboutBlock:
+    by_phase = usage.get("by_phase") or {}
+    total = usage.get("total") or {}
+    phases = [(key, name) for key, name in PHASE_NAMES if key in by_phase]
+    columns = [by_phase[key] for key, _ in phases]
+    header = [""] + [name for _, name in phases]
+    if len(phases) != 1:
+        columns.append(total)
+        header.append("Totalt")
+
+    def row(label: str, field_name: str) -> list[str]:
+        return [label] + [_fmt_int(column.get(field_name)) for column in columns]
+
+    rows = [header, row("Anrop till språkmodellen", "calls")]
+    if total.get("failed_calls"):
+        rows.append(row("varav misslyckade", "failed_calls"))
+    rows.append(row("Tokens skickade", "prompt_tokens"))
+    if total.get("cached_prompt_tokens"):
+        # Återanvända (cachade) tokens debiteras till ett lägre pris, så utan
+        # den här raden överskattas kostnaden.
+        rows.append(row("varav återanvända (lägre kostnad)", "cached_prompt_tokens"))
+    rows.append(row("Tokens mottagna", "completion_tokens"))
+    if total.get("reasoning_tokens"):
+        rows.append(row("varav för resonemang", "reasoning_tokens"))
+    return AboutBlock("table", rows=rows, numeric_columns=tuple(range(1, len(header))))
+
+
+def _suggestions_table(summary: dict) -> AboutBlock:
+    local = summary.get("local_suggestions") or {}
+    rows = [
+        ["Lokala förslag", "Antal"],
+        ["Förslag från språkmodellen", _fmt_int(local.get("raw"))],
+        ["Förslag som klarade kontrollerna", _fmt_int(local.get("accepted"))],
+        ["Förslag som förts in i dokumentet", _fmt_int(local.get("applied"))],
+    ]
+    if local.get("failed"):
+        rows.append(["Förslag som inte kunde föras in", _fmt_int(local.get("failed"))])
+    return AboutBlock("table", rows=rows, numeric_columns=(1,))
+
+
+def _global_blocks(summary: dict) -> list[AboutBlock]:
+    global_findings = summary.get("global_findings") or {}
+    accepted = global_findings.get("accepted") or 0
+    title = _table_title("Iakttagelser från den globala granskningen")
+    if global_findings.get("errors") and not accepted:
+        return [title, AboutBlock("paragraph", [("Den globala granskningen kunde inte genomföras.", False)])]
+    rows = [["Kategori", "Antal"]]
+    for category, count in (global_findings.get("by_category") or {}).items():
+        name = GLOBAL_CATEGORY_NAMES_PLURAL.get(category, category)
+        rows.append([name[:1].upper() + name[1:], _fmt_int(count)])
+    rows.append(["Totalt", _fmt_int(accepted)])
+    blocks = [title, AboutBlock("table", rows=rows, numeric_columns=(1,))]
+    if accepted:
+        blocks.append(AboutBlock("paragraph", [("Iakttagelserna finns som kommentarer i dokumentet.", False)]))
+    return blocks
+
+
+def _readability_blocks(readability: dict) -> list[AboutBlock]:
+    before = readability.get("before") or {}
+    after = readability.get("after") or {}
+    rows = [
+        ["Del av dokumentet", "Före", "Om alla förslag godtas", "Förändring"],
+        [
+            "Hela dokumentet",
+            _fmt_lix(before.get("lix"), before.get("band")),
+            _fmt_lix(after.get("lix"), after.get("band")),
+            _fmt_delta(before.get("lix"), after.get("lix")),
+        ],
+    ]
+    for section in readability.get("sections") or []:
+        section_before = (section.get("before") or {}).get("lix")
+        section_after = (section.get("after") or {}).get("lix")
+        rows.append([
+            section.get("heading") or "Före första rubriken",
+            _fmt_lix_value(section_before),
+            _fmt_lix_value(section_after),
+            _fmt_delta(section_before, section_after),
+        ])
+    return [
+        _table_title("Läsbarhet (LIX)"),
+        AboutBlock("table", rows=rows, numeric_columns=(1, 2, 3)),
+        AboutBlock("paragraph", [(LIX_EXPLANATION, False)]),
+    ]
+
+
+def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]:
+    """
+    Bygger avsnittets innehåll från RunSummary.to_dict() (med usage ifylld).
+    Uppgifter om körningen står som korta rader; siffror står i tabeller.
+    Avsnittet slutar alltid med ett stycke (där bokmärket slutar).
+    """
+    blocks = [AboutBlock("heading", [(ABOUT_HEADING, False)])]
+    blocks.append(AboutBlock("paragraph", [(
         "Det här dokumentet har granskats med en klarspråkningstjänst. "
-        "Förslagen till ändringar har tagits fram av en AI-språkmodell. "
-        "AI kan göra misstag, så granska förslagen innan du godtar dem."
-    )
-    if tracked:
-        intro += (
-            " Avsnittet är infogat som en spårad ändring. Du tar bort det genom "
-            "att markera hela avsnittet och avvisa ändringen."
-        )
-    else:
-        intro += " Du kan ta bort avsnittet när granskningen är klar."
-    blocks.append(AboutBlock("paragraph", [(intro, False)]))
+        "Förslagen till ändringar har tagits fram av en AI-språkmodell.",
+        False,
+    )]))
 
     # --- Körningen
     blocks.append(_item("Datum", _fmt_date(summary.get("started_at"))))
     blocks.append(_item("Språkmodell", str(summary.get("model") or "okänd")))
-
     if summary.get("docx_mode") == "tracked":
         presentation = "Spåra ändringar"
         if summary.get("include_motivations"):
@@ -150,7 +269,6 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
     else:
         presentation = "Enkel färgmarkering"
     blocks.append(_item("Visning av förslagen", presentation))
-
     prompt_customized = summary.get("prompt_customized")
     if prompt_customized is not None:
         blocks.append(_item(
@@ -158,73 +276,26 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             "anpassad för den här granskningen" if prompt_customized else "standard",
         ))
 
-    # --- Tokens
-    usage = summary.get("usage") or {}
-    total = usage.get("total") or {}
-    calls = f"{_fmt_int(total.get('calls'))}"
-    global_calls = ((usage.get("by_phase") or {}).get("global") or {}).get("calls")
-    if global_calls:
-        local_calls = ((usage.get("by_phase") or {}).get("local") or {}).get("calls")
-        calls += f" ({_fmt_int(local_calls)} lokala, {_fmt_int(global_calls)} för global granskning)"
-    if total.get("failed_calls"):
-        calls += f", varav {_fmt_int(total.get('failed_calls'))} misslyckades"
-    blocks.append(_item("Anrop till språkmodellen", calls))
-    sent = _fmt_int(total.get("prompt_tokens"))
-    if total.get("cached_prompt_tokens"):
-        # Återanvända (cachade) tokens debiteras till ett lägre pris, så utan
-        # den här uppgiften överskattas kostnaden.
-        sent += f", varav {_fmt_int(total.get('cached_prompt_tokens'))} återanvända (lägre kostnad)"
-    blocks.append(_item("Tokens skickade", sent))
-    received = _fmt_int(total.get("completion_tokens"))
-    if total.get("reasoning_tokens"):
-        received += f", varav {_fmt_int(total.get('reasoning_tokens'))} för resonemang"
-    blocks.append(_item("Tokens mottagna", received))
-
-    # --- Förslag
-    local = summary.get("local_suggestions") or {}
-    blocks.append(_item("Förslag från språkmodellen", _fmt_int(local.get("raw"))))
-    blocks.append(_item("Förslag som klarade kontrollerna", _fmt_int(local.get("accepted"))))
-    blocks.append(_item("Förslag som förts in i dokumentet", _fmt_int(local.get("applied"))))
-    if local.get("failed"):
-        blocks.append(_item("Förslag som inte kunde föras in", _fmt_int(local.get("failed"))))
-
-    # --- Global granskning
+    # --- Tabeller
+    blocks.append(_table_title("Anrop och tokens"))
+    blocks.append(_usage_table(summary.get("usage") or {}))
+    blocks.append(_table_title("Förslag"))
+    blocks.append(_suggestions_table(summary))
     if summary.get("global_review"):
-        global_findings = summary.get("global_findings") or {}
-        accepted = global_findings.get("accepted") or 0
-        if global_findings.get("errors") and not accepted:
-            value = "kunde inte genomföras"
-        else:
-            value = _fmt_int(accepted)
-            by_category = global_findings.get("by_category") or {}
-            if by_category:
-                value += " (" + ", ".join(
-                    f"{GLOBAL_CATEGORY_NAMES_PLURAL.get(category, category)}: {_fmt_int(count)}"
-                    for category, count in by_category.items()
-                ) + ")"
-            if accepted:
-                value += ", som kommentarer i dokumentet"
-        blocks.append(_item("Iakttagelser från den globala granskningen", value))
+        blocks.extend(_global_blocks(summary))
+    if summary.get("readability"):
+        blocks.extend(_readability_blocks(summary["readability"]))
 
-    # --- Läsbarhet
-    readability = summary.get("readability")
-    if readability:
-        before = readability.get("before") or {}
-        after = readability.get("after") or {}
-        blocks.append(_item("Läsbarhet (LIX) före", _fmt_lix(before.get("lix"), before.get("band"))))
-        blocks.append(_item(
-            "Läsbarhet (LIX) om alla förslag godtas",
-            _fmt_lix(after.get("lix"), after.get("band")),
-        ))
-        blocks.append(AboutBlock("paragraph", [(
-            "LIX (läsbarhetsindex) bygger på meningarnas längd och andelen ord med fler "
-            "än sex bokstäver. Rubriker, sidhuvuden, sidfötter och fotnoter räknas inte med. "
-            "Riktvärden: under 30 mycket lättläst, 30–40 lättläst, 40–50 medelsvår, "
-            "50–60 svår och över 60 mycket svår. LIX säger inget om hur begriplig texten "
-            "är i övrigt, och en tydligare formulering kan ibland ge ett högre värde.",
-            False,
-        )]))
-
+    # --- Avslutning
+    closing = "AI kan göra misstag, så granska förslagen innan du godtar dem."
+    if tracked:
+        closing += (
+            " Avsnittet är infogat som en spårad ändring. Du tar bort det genom "
+            "att markera hela avsnittet och avvisa ändringen."
+        )
+    else:
+        closing += " Du kan ta bort avsnittet när granskningen är klar."
+    blocks.append(AboutBlock("paragraph", [(closing, False)]))
     return blocks
 
 
@@ -267,15 +338,24 @@ class AboutSectionRenderer:
         heading_style = self._resolve_heading_style(body)
         timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-        paragraphs = [self._build_paragraph(block, heading_style) for block in blocks]
+        if not blocks or blocks[-1].kind != "paragraph":
+            raise ValueError("The section must end with a paragraph (the bookmark ends there)")
+        elements = [
+            self._build_table(block) if block.kind == "table" else self._build_paragraph(block, heading_style)
+            for block in blocks
+        ]
+        paragraphs = elements  # stycken och tabeller i ordning (namnet behålls för läsbarhet nedan)
 
         final_sectpr = body.find(f"{W}sectPr")
         previous_last = self._last_block(body)
 
         if tracked:
             self._next_id = self._max_revision_id() + 1
-            for paragraph in paragraphs:
-                self._wrap_runs_in_insertion(paragraph, timestamp)
+            for element in elements:
+                if element.tag == f"{W}tbl":
+                    self._mark_table_inserted(element, timestamp)
+                else:
+                    self._wrap_runs_in_insertion(element, timestamp)
 
             closing = etree.Element(f"{W}p")
             if self._can_extend_last_paragraph(previous_last):
@@ -291,8 +371,9 @@ class AboutSectionRenderer:
             # avsnittsbrytning eller är tomt): alla nya stycken markeras och ett
             # tomt avslutande stycke blir kvar vid avvisning. Word kräver ändå
             # ett stycke sist i dokumentet, så resultatet motsvarar originalet.
-            for paragraph in paragraphs:
-                self._mark_paragraph_inserted(paragraph, timestamp)
+            for element in elements:
+                if element.tag == f"{W}p":
+                    self._mark_paragraph_inserted(element, timestamp)
             paragraphs.append(closing)
 
         self._add_bookmark(paragraphs[0], paragraphs[len(blocks) - 1])
@@ -304,7 +385,11 @@ class AboutSectionRenderer:
                 body.append(paragraph)
 
         self.package.write_document_tree(tree)
-        message = f"Inserted {len(blocks)} paragraphs ({'tracked' if tracked else 'plain'})"
+        tables = len([b for b in blocks if b.kind == "table"])
+        message = (
+            f"Inserted {len(blocks) - tables} paragraphs and {tables} tables "
+            f"({'tracked' if tracked else 'plain'})"
+        )
         if replaced:
             message += "; replaced an existing section"
         self.logger.info(f"About section: {message}; heading style: {heading_style or 'bold fallback'}")
@@ -315,40 +400,73 @@ class AboutSectionRenderer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def find_section_range(body: etree._Element) -> Optional[tuple[int, int]]:
-        """(första, sista) index bland body:s w:p för avsnittet, eller None."""
-        paragraphs = body.findall(f"{W}p")
+    def find_section_blocks(body: etree._Element) -> list[etree._Element]:
+        """
+        Avsnittets block (w:p, w:tbl, w:sdt) i brödtexten, från stycket med
+        bokmärkets början till stycket med dess slut. Tom lista om inget avsnitt.
+        """
+        blocks = [child for child in body if child.tag in (f"{W}p", f"{W}tbl", f"{W}sdt")]
         start_index = end_index = None
         bookmark_id = None
-        for index, paragraph in enumerate(paragraphs):
-            if start_index is None:
-                for start in paragraph.iter(f"{W}bookmarkStart"):
+        for index, block in enumerate(blocks):
+            if start_index is None and block.tag == f"{W}p":
+                for start in block.iter(f"{W}bookmarkStart"):
                     if start.get(f"{W}name") == ABOUT_BOOKMARK_NAME:
                         start_index, bookmark_id = index, start.get(f"{W}id")
                         break
             if start_index is not None:
-                for end in paragraph.iter(f"{W}bookmarkEnd"):
+                for end in block.iter(f"{W}bookmarkEnd"):
                     if end.get(f"{W}id") == bookmark_id:
                         end_index = index
                         break
                 if end_index is not None:
                     break
         if start_index is None:
-            return None
-        return start_index, (end_index if end_index is not None else len(paragraphs) - 1)
+            return []
+        return blocks[start_index:(end_index if end_index is not None else len(blocks) - 1) + 1]
+
+    @classmethod
+    def find_section_indices(cls, body: etree._Element) -> tuple[set[int], set[int]]:
+        """
+        1-baserade index för avsnittets stycken och tabeller, med samma
+        numrering som doc.paragraphs och doc.tables (brödtextens w:p och w:tbl).
+        """
+        # Listan hålls vid liv under hela jämförelsen: lxml skapar tillfälliga
+        # Python-objekt för noderna, så id() kan återanvändas om de släpps.
+        # Elementen jämförs därför direkt (identitet), inte via id().
+        section_blocks = cls.find_section_blocks(body)
+        section = set(section_blocks)
+        paragraphs: set[int] = set()
+        tables: set[int] = set()
+        p_count = t_count = 0
+        for child in body:
+            if child.tag == f"{W}p":
+                p_count += 1
+                if child in section:
+                    paragraphs.add(p_count)
+            elif child.tag == f"{W}tbl":
+                t_count += 1
+                if child in section:
+                    tables.add(t_count)
+        return paragraphs, tables
 
     def _remove_existing_section(self, body: etree._Element) -> bool:
-        section_range = self.find_section_range(body)
-        if section_range is None:
+        section = self.find_section_blocks(body)
+        if not section:
             return False
-        paragraphs = body.findall(f"{W}p")
-        start, end = section_range
-        for paragraph in paragraphs[start:end + 1]:
-            body.remove(paragraph)
+        following = []
+        sibling = section[-1].getnext()
+        while sibling is not None and sibling.tag == f"{W}p":
+            following.append(sibling)
+            sibling = sibling.getnext()
+        for block in section:
+            body.remove(block)
         # Tomma avslutande stycken från förra körningen tas också bort.
-        for paragraph in paragraphs[end + 1:]:
-            if paragraph.getparent() is body and self._is_empty_paragraph(paragraph):
+        for paragraph in following:
+            if self._is_empty_paragraph(paragraph):
                 body.remove(paragraph)
+            else:
+                break
         self.logger.warning("Existing 'Om klarspråkningen' section found and replaced")
         return True
 
@@ -478,6 +596,12 @@ class AboutSectionRenderer:
         paragraph = etree.Element(f"{W}p")
         is_heading = block.kind == "heading"
 
+        if block.keep_with_next and not is_heading:
+            # Tabellrubrik: hålls ihop med tabellen och får luft ovanför
+            ppr = etree.SubElement(paragraph, f"{W}pPr")
+            etree.SubElement(ppr, f"{W}keepNext")
+            etree.SubElement(ppr, f"{W}spacing", {f"{W}before": "240"})
+
         if is_heading:
             ppr = etree.SubElement(paragraph, f"{W}pPr")
             if heading_style:
@@ -500,6 +624,79 @@ class AboutSectionRenderer:
             t.set(f"{{{XML_NS}}}space", "preserve")
             t.text = text
         return paragraph
+
+    # Tabellens totala bredd i twips (A4 med normala marginaler) och den första
+    # kolumnens andel beroende på antal kolumner; övriga kolumner delar resten.
+    TABLE_WIDTH_TWIPS = 9000
+    FIRST_COLUMN_SHARE = {1: 1.0, 2: 0.75, 3: 0.55}
+    FIRST_COLUMN_SHARE_MANY = 0.40
+
+    def _build_table(self, block: AboutBlock) -> etree._Element:
+        """
+        Enkel tabell med tunna ramar och fet rubrikrad som upprepas vid
+        sidbrytning. Inga tabellformat används, så utseendet blir detsamma i
+        alla mallar.
+        """
+        columns = max(len(row) for row in block.rows)
+        share = self.FIRST_COLUMN_SHARE.get(columns, self.FIRST_COLUMN_SHARE_MANY)
+        first = int(self.TABLE_WIDTH_TWIPS * share)
+        rest = (self.TABLE_WIDTH_TWIPS - first) // max(columns - 1, 1)
+        widths = [first] + [rest] * (columns - 1)
+
+        table = etree.Element(f"{W}tbl")
+        tbl_pr = etree.SubElement(table, f"{W}tblPr")
+        etree.SubElement(tbl_pr, f"{W}tblW", {f"{W}w": "5000", f"{W}type": "pct"})
+        borders = etree.SubElement(tbl_pr, f"{W}tblBorders")
+        for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            etree.SubElement(borders, f"{W}{side}", {
+                f"{W}val": "single", f"{W}sz": "4", f"{W}space": "0", f"{W}color": "auto",
+            })
+        margins = etree.SubElement(tbl_pr, f"{W}tblCellMar")
+        for side in ("left", "right"):
+            etree.SubElement(margins, f"{W}{side}", {f"{W}w": "80", f"{W}type": "dxa"})
+        etree.SubElement(tbl_pr, f"{W}tblLook", {
+            f"{W}val": "04A0", f"{W}firstRow": "1", f"{W}lastRow": "0",
+            f"{W}firstColumn": "1", f"{W}lastColumn": "0", f"{W}noHBand": "0", f"{W}noVBand": "1",
+        })
+        grid = etree.SubElement(table, f"{W}tblGrid")
+        for width in widths:
+            etree.SubElement(grid, f"{W}gridCol", {f"{W}w": str(width)})
+
+        for row_index, row in enumerate(block.rows):
+            tr = etree.SubElement(table, f"{W}tr")
+            tr_pr = etree.SubElement(tr, f"{W}trPr")
+            etree.SubElement(tr_pr, f"{W}cantSplit")
+            if row_index == 0:
+                etree.SubElement(tr_pr, f"{W}tblHeader")
+            for column in range(columns):
+                text = row[column] if column < len(row) else ""
+                tc = etree.SubElement(tr, f"{W}tc")
+                tc_pr = etree.SubElement(tc, f"{W}tcPr")
+                etree.SubElement(tc_pr, f"{W}tcW", {f"{W}w": str(widths[column]), f"{W}type": "dxa"})
+                paragraph = etree.SubElement(tc, f"{W}p")
+                p_pr = etree.SubElement(paragraph, f"{W}pPr")
+                etree.SubElement(p_pr, f"{W}spacing", {f"{W}before": "20", f"{W}after": "20"})
+                if column in block.numeric_columns:
+                    etree.SubElement(p_pr, f"{W}jc", {f"{W}val": "right"})
+                run = etree.SubElement(paragraph, f"{W}r")
+                if row_index == 0:
+                    etree.SubElement(etree.SubElement(run, f"{W}rPr"), f"{W}b")
+                t = etree.SubElement(run, f"{W}t")
+                t.set(f"{{{XML_NS}}}space", "preserve")
+                t.text = text
+        return table
+
+    def _mark_table_inserted(self, table: etree._Element, timestamp: str) -> None:
+        """Spårad infogning av en hel tabell: varje rad, stycke och körning."""
+        for tr in table.findall(f"{W}tr"):
+            tr_pr = tr.find(f"{W}trPr")
+            if tr_pr is None:
+                tr_pr = etree.Element(f"{W}trPr")
+                tr.insert(0, tr_pr)
+            tr_pr.append(self._revision_element("ins", timestamp))
+            for paragraph in tr.iter(f"{W}p"):
+                self._wrap_runs_in_insertion(paragraph, timestamp)
+                self._mark_paragraph_inserted(paragraph, timestamp)
 
     def _add_bookmark(self, first: etree._Element, last: etree._Element) -> None:
         tree_root = self.package.read_document_tree().getroot()

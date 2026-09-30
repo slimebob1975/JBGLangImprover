@@ -18,6 +18,7 @@ try:
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
     from app.src.JBGGlobalFindingsRenderer import GlobalFindingsRenderer
+    from app.src.JBGReadabilityCommentRenderer import ReadabilityCommentRenderer
     from app.src.JBGReadabilityMetrics import (
         compute_document_readability,
         compute_document_readability_from_files,
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
     from JBGGlobalFindingsRenderer import GlobalFindingsRenderer
+    from JBGReadabilityCommentRenderer import ReadabilityCommentRenderer
     from JBGReadabilityMetrics import (
         compute_document_readability,
         compute_document_readability_from_files,
@@ -342,6 +344,9 @@ class JBGLanguageImprover:
 
             if self.include_about_section:
                 self._render_about_section(pkg)
+            elif self.run_summary.readability:
+                # Utan avsnittet visas LIX som en kommentar vid titeln.
+                self._render_readability_comment(pkg)
 
             final_output_path = pkg.save(output_path)
 
@@ -427,6 +432,20 @@ class JBGLanguageImprover:
         except Exception as ex:
             self.logger.warning(f"Could not add 'Om klarspråkningen' section: {ex}")
             self.run_summary.about_section = {"applied": False, "message": str(ex)}
+
+    def _render_readability_comment(self, pkg):
+        """Fel här får aldrig stoppa körningen."""
+        self._report("Lägger till LIX-värdet som kommentar vid titeln...")
+        try:
+            result = ReadabilityCommentRenderer(pkg, self.logger, self.structure).apply(
+                self.run_summary.readability
+            )
+            self.run_summary.lix_comment = {
+                "applied": result.applied, "message": result.message, "element_id": result.element_id,
+            }
+        except Exception as ex:
+            self.logger.warning(f"Could not add LIX comment: {ex}")
+            self.run_summary.lix_comment = {"applied": False, "message": str(ex)}
 
     def _save_run_summary(self):
         self.run_summary.usage = self.usage_tracker.to_dict()

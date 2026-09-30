@@ -45,6 +45,8 @@ class RunSummary:
     # Global granskning: parts, raw, accepted, rejected, by_category, errors,
     # comments_applied. None när den globala granskningen inte kördes.
     global_findings: Optional[dict[str, Any]] = None
+    # LIX som kommentar vid titeln, när avsnittet Om klarspråkningen inte läggs till
+    lix_comment: Optional[dict[str, Any]] = None
 
     def finish(self, succeeded: bool, error: Optional[str] = None) -> None:
         self.finished_at = _now()

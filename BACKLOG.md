@@ -50,6 +50,8 @@ the global step fails, the run still delivers the locally improved document.
   - `global_review` runs the global analyzer (Phase 3)
 - [x] G2.4 Show progress messages for the global phase in the status polling
 - [x] G2.5 Make LIX optional: checkbox "Beräkna LIX-värde före och efter granskning" under "Övrigt" (default on), sent as `compute_lix`; when on, LIX is saved in the run summary even without the "Om klarspråkningen" section
+  - Moved to "Globala inställningar" under the structure checkbox, unchecked by default. "Lägg till ”Om klarspråkningen” sist" is also unchecked by default (GUI and `main.py` defaults)
+  - Without the section, LIX is added as a comment on the document title: the first paragraph in the Title style, otherwise the first body paragraph with text (fact boxes and text boxes are skipped)
 - [x] G2.6 GUI layout: compact vertical spacing, left-aligned radio buttons and checkboxes, section headings "Globala inställningar" and "Övrigt", prompt label "Anpassa den lokala promptinstruktionen"
 
 #### Phase 3 - Global analyzer (LLM)
@@ -101,6 +103,7 @@ Finding categories, to be implemented in this order:
   - The same three rules apply to every document, regardless of template: (1) last in the body, on a new page; (2) one tracked insertion in tracked mode; (3) unnumbered heading, enforced with a direct `numId 0` override even when the style or `numbering.xml` numbers it
   - Regression matrix: IAF-like, plain, numbered heading via style, numbered heading via `numbering.xml`, English references, ends with table, ends with content control, ends with section break, empty document, last paragraph without formatting
   - The global findings line is added in Phase 3
+- [x] G5.7 Numbers in tables: "Anrop och tokens" (one column per phase plus total), "Förslag", "Iakttagelser från den globala granskningen" (per category) and "Läsbarhet (LIX)" (whole document and each chapter: before, after, change). Run facts stay as short lines. Tables are tracked row by row, so rejecting the section still restores the original; the extractor skips the section's tables as well as its paragraphs on a rerun
 - [ ] G5.5 Verify in Word with a real IAF report: heading style, page break after the back cover, and header/footer/background of the new page
 - [ ] G5.6 Known limitation: the section inherits the page layout of the document's last Word section (columns, orientation, headers/footers, background). If this is a problem in practice, insert a real section break with a clean single-column layout instead of a page break
 

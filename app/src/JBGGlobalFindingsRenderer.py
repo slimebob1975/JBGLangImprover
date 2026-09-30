@@ -74,7 +74,7 @@ class GlobalFindingsRenderer:
 
         for finding in findings:
             try:
-                paragraph = self._locate_paragraph(adapter, finding.element_ids[0])
+                paragraph = locate_paragraph(adapter, self.elements, finding.element_ids[0])
                 comment_id = comments.add_paragraph_comment(paragraph, self.comment_text(finding))
                 changed = True
                 results.append(GlobalCommentResult(finding, True, "Comment applied", comment_id))
@@ -146,25 +146,28 @@ class GlobalFindingsRenderer:
                 heading = " ".join(candidate["text"].split())
         return heading
 
-    # ------------------------------------------------------------------
-    # Ankare
-    # ------------------------------------------------------------------
 
-    def _locate_paragraph(self, adapter: DocumentPartAdapter, element_id: str):
-        element = self.elements.get(element_id)
-        if element is None:
-            raise ValueError(f"Unknown element_id: {element_id}")
 
-        element_type = element.get("type")
-        if element_type == "textbox":
-            match = _TEXTBOX_HOST_RE.match(element.get("container_path") or "")
-            if not match:
-                raise ValueError(f"Cannot find host paragraph for {element_id}")
-            element_type, element_id = "paragraph", f"paragraph_{match.group(1)}"
+def locate_paragraph(adapter: DocumentPartAdapter, elements: dict, element_id: str):
+    """
+    w:p-elementet för ett element i strukturen, för kommentarer kring hela
+    stycket. Stycken och tabellceller förankras direkt; textrutor i stycket
+    som bär dem. Fotnoter, sidhuvuden och sidfötter stöds inte.
+    """
+    element = elements.get(element_id)
+    if element is None:
+        raise ValueError(f"Unknown element_id: {element_id}")
 
-        plan = SimpleNamespace(target=SimpleNamespace(element_type=element_type, element_id=element_id))
-        if element_type == "paragraph":
-            return adapter._find_main_document_paragraph(plan)
-        if element_type == "table_cell":
-            return adapter._find_table_cell_paragraph(plan)
-        raise ValueError(f"Global comments are not anchored in {element_type} elements")
+    element_type = element.get("type")
+    if element_type == "textbox":
+        match = _TEXTBOX_HOST_RE.match(element.get("container_path") or "")
+        if not match:
+            raise ValueError(f"Cannot find host paragraph for {element_id}")
+        element_type, element_id = "paragraph", f"paragraph_{match.group(1)}"
+
+    plan = SimpleNamespace(target=SimpleNamespace(element_type=element_type, element_id=element_id))
+    if element_type == "paragraph":
+        return adapter._find_main_document_paragraph(plan)
+    if element_type == "table_cell":
+        return adapter._find_table_cell_paragraph(plan)
+    raise ValueError(f"Comments are not anchored in {element_type} elements")

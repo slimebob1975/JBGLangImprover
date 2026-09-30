@@ -41,6 +41,10 @@
                 <input type="checkbox" id="globalReview" name="globalReview">
                 <label for="globalReview">Granska dokumentets struktur och upplägg</label>
             </div>
+            <div class="form-check" title="LIX (läsbarhetsindex) bygger på meningarnas längd och andelen långa ord. Värdena visas i avsnittet Om klarspråkningen, eller som en kommentar vid dokumentets titel om avsnittet inte läggs till.">
+                <input type="checkbox" id="computeLix" name="computeLix">
+                <label for="computeLix">Beräkna LIX-värde före och efter granskning</label>
+            </div>
 
             <!-- Temperature Slider (obsolete from GPT-5 models) -->
             <div style="display: none;">
@@ -66,12 +70,8 @@
             <!-- Övrigt -->
             <label class="form-section">Övrigt</label>
             <div class="form-check" title="Avsnittet beskriver granskningen: språkmodell, antal tokens, antal förslag och läsbarhet (LIX) före och efter. Med Spåra ändringar infogas det som en spårad ändring som du kan avvisa i ett steg.">
-                <input type="checkbox" id="includeAboutSection" name="includeAboutSection" checked>
+                <input type="checkbox" id="includeAboutSection" name="includeAboutSection">
                 <label for="includeAboutSection">Lägg till ”Om klarspråkningen” sist</label>
-            </div>
-            <div class="form-check" title="LIX (läsbarhetsindex) bygger på meningarnas längd och andelen långa ord. Värdena visas i avsnittet Om klarspråkningen och sparas i körningens sammanfattning, även när avsnittet inte läggs till.">
-                <input type="checkbox" id="computeLix" name="computeLix" checked>
-                <label for="computeLix">Beräkna LIX-värde före och efter granskning</label>
             </div>
              <div class="form-inline" style="display: none;">
                 <label for="includeMotivations" title="Språkmodellen genererar motiveringar till förändringsförslagen, och dessa läggs som kommentarer i dokumentet">Lägg till kommentarer till förslagen ("Spåra ändringar"):</label>
