@@ -334,8 +334,11 @@ class JBGLangImprovSuggestorAI:
             raise ValueError(f"Could not load JSON document from {filepath}")
 
     def save_as_json(self, output_path=None, use_validated=True):
+        # Generera bara om granskningen aldrig har körts. Ett tomt resultat är
+        # ett giltigt resultat; att köra om vid noll förslag dubblerade tidigare
+        # både tid och tokenkostnad.
         if use_validated:
-            if not self.validated_suggestions:
+            if self.json_suggestions is None:
                 self.suggest_changes_token_aware_batching()
             payload = [self._suggested_change_to_output_dict(s) for s in self.validated_suggestions]
         else:

@@ -228,6 +228,33 @@ class CommentsRenderer:
 
         return comment_id
 
+    def add_paragraph_comment(self, paragraph: etree._Element, text: str) -> int:
+        """
+        Förankrar en kommentar kring hela stycket (G4.1), för iakttagelser som
+        inte hör till en viss ändring. Skriver comments.xml; anroparen skriver
+        tillbaka värddelen där stycket finns.
+        """
+        if paragraph is None or paragraph.tag != f"{{{W_NS}}}p":
+            raise ValueError("Paragraph comment requires a w:p element")
+
+        comment_id = self._create_comment(text)
+
+        start = etree.Element(f"{{{W_NS}}}commentRangeStart")
+        start.set(f"{{{W_NS}}}id", str(comment_id))
+        end = etree.Element(f"{{{W_NS}}}commentRangeEnd")
+        end.set(f"{{{W_NS}}}id", str(comment_id))
+        ref_run = etree.Element(f"{{{W_NS}}}r")
+        ref = etree.SubElement(ref_run, f"{{{W_NS}}}commentReference")
+        ref.set(f"{{{W_NS}}}id", str(comment_id))
+
+        ppr = paragraph.find(f"{{{W_NS}}}pPr")
+        paragraph.insert(0 if ppr is None else paragraph.index(ppr) + 1, start)
+        paragraph.append(end)
+        paragraph.append(ref_run)
+
+        self.package.write_comments_tree(self.comments_tree)
+        return comment_id
+
     def _find_ancestor_paragraph(self, element: etree._Element) -> Optional[etree._Element]:
         current = element
         while current is not None:
@@ -250,11 +277,13 @@ class CommentsRenderer:
         comment.set(f"{{{W_NS}}}initials", self.initials)
         comment.set(f"{{{W_NS}}}date", self._current_word_timestamp())
 
-        p = etree.SubElement(comment, f"{{{W_NS}}}p")
-        r = etree.SubElement(p, f"{{{W_NS}}}r")
-        t = etree.SubElement(r, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        # En rad per stycke i kommentaren; enradiga kommentarer ser ut som förut.
+        for line in (text.split("\n") if text else [""]):
+            p = etree.SubElement(comment, f"{{{W_NS}}}p")
+            r = etree.SubElement(p, f"{{{W_NS}}}r")
+            t = etree.SubElement(r, f"{{{W_NS}}}t")
+            t.set(f"{{{XML_NS}}}space", "preserve")
+            t.text = line
 
         return comment_id
 

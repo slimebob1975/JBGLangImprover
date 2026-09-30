@@ -7,7 +7,10 @@ from app.src.JBGReadabilityMetrics import (
     apply_suggestions_to_text,
     compute_document_readability,
     compute_document_readability_from_files,
+    is_caption,
+    is_section_heading,
     lix_band,
+    rounded_lix_delta,
     text_stats,
 )
 
@@ -161,6 +164,79 @@ class DocumentReadabilityTests(unittest.TestCase):
             ).to_dict()
         in_memory = compute_document_readability(self.structure, self.suggestions).to_dict()
         self.assertEqual(from_files, in_memory)
+
+
+class RegressionFromRealReportTests(unittest.TestCase):
+    """Fall från testkörningen 93dbc428 (Rapportutkast för test av klarspråksgranskning)."""
+
+    def test_layout_line_breaks_inside_a_sentence_are_not_boundaries(self):
+        # table_13_cell_1_1_p8: en mening med två manuella radbrytningar
+        text = (
+            "IAF riktar allvarlig kritik mot den aktör vi har granskat när \n"
+            "bristen är av större omfattning eller avser allvarligare avsteg från gällande \n"
+            "regelverk, eller av sådan art att den riskerar att skada "
+            "arbetslöshetsförsäkringens legitimitet. "
+        )
+        self.assertEqual(text_stats(text).sentences, 1)
+
+    def test_removing_layout_breaks_does_not_change_sentence_count(self):
+        before = "IAF påpekar en brist, när bristen inte har fått några eller endast \nsmå konsekvenser."
+        after, applied, _, _ = apply_suggestions_to_text(before, [{
+            "old": ", när bristen inte har fått några eller endast \n",
+            "new": " när bristen inte har fått några eller bara ",
+        }])
+        self.assertEqual(applied, 1)
+        self.assertEqual(text_stats(before).sentences, 1)
+        self.assertEqual(text_stats(after).sentences, 1)
+
+    def test_line_break_before_new_line_item_is_a_boundary(self):
+        self.assertEqual(text_stats("Telefon 010-123 45 67\nE-post info@iaf.se").sentences, 2)
+        self.assertEqual(text_stats("Första punkten\n• Andra punkten").sentences, 2)
+
+    def test_line_break_after_comma_is_not_a_boundary(self):
+        self.assertEqual(text_stats("Granskningen omfattar Arbetsförmedlingen,\nIAF och a-kassorna.").sentences, 1)
+
+    def test_rounded_delta_matches_displayed_values(self):
+        # Orundat 51.549 -> 51.591 gav tidigare 0.0 trots visningen 51.5 -> 51.6
+        self.assertEqual(rounded_lix_delta(51.549, 51.591), 0.1)
+        self.assertIsNone(rounded_lix_delta(None, 50.0))
+
+    def test_captions_are_not_section_headings(self):
+        caption = {"type": "paragraph", "heading_level": 1, "style_id": "IAFTabellrubrik",
+                   "style_name": "IAF Tabellrubrik",
+                   "text": "Tabell 1: Antal återkallanden totalt och antal återkallanden per 100 programdeltagare 2025."}
+        self.assertTrue(is_caption(caption))
+        self.assertFalse(is_section_heading(caption))
+        self.assertTrue(is_caption({"type": "paragraph", "style_name": "Normal", "text": "Figur 3 Andel ärenden"}))
+        self.assertTrue(is_caption({"type": "paragraph", "style_id": "Caption", "text": "Källa: IAF"}))
+        self.assertFalse(is_caption({"type": "paragraph", "style_name": "Heading 1", "text": "Tabeller och figurer"}))
+
+    def test_sections_ignore_table_headings_captions_and_empty_chapters(self):
+        def el(eid, etype, text, level=None, style="Normal", order=None):
+            return {"type": etype, "element_id": eid, "text": text, "heading_level": level,
+                    "style_id": style, "style_name": style, "doc_order": order}
+
+        structure = {"type": "docx", "elements": [
+            el("paragraph_1", "paragraph", "Sammanfattning", 1, "IAFSammanfattning", 1),
+            el("paragraph_2", "paragraph", "Myndigheten brister.", None, "Normal", 2),
+            # Faktaruta byggd som tabell med rubrikformaterad första rad
+            el("table_1_cell_1_1_p1", "table_cell", "IAF riktar en anmärkning till Arbetsförmedlingen för att",
+               1, "IAFRubriktilltextruta2", 3),
+            el("table_1_cell_1_1_p2", "table_cell", "Beslut saknar rättslig grund.", None, "Normal", 4),
+            el("paragraph_3", "paragraph", "Utvecklingen", 1, "IAFRubrik1numrerad-Kapitel", 5),
+            el("paragraph_4", "paragraph", "Antalet ökar.", None, "Normal", 6),
+            el("paragraph_5", "paragraph", "Tabell 1: Antal återkallanden", 1, "IAFTabellrubrik", 7),
+            el("table_2_cell_1_1_p1", "table_cell", "Totalt 1 200 ärenden.", None, "Normal", 8),
+            el("paragraph_6", "paragraph", "Bilaga 2:", 1, "IAFBilagerubrik1", 9),
+            # Tom rubrik med outline level ska inte öppna ett avsnitt
+            el("paragraph_7", "paragraph", "\n", 1, "IAFRubrik1numrerad-Kapitel", 10),
+        ]}
+        sections = compute_document_readability(structure, []).to_dict()["sections"]
+
+        self.assertEqual([s["heading"] for s in sections], ["Sammanfattning", "Utvecklingen"])
+        # Faktarutan räknas in i Sammanfattning, tabellen efter bildtexten i Utvecklingen
+        self.assertEqual(sections[0]["before"]["words"], 2 + 4)
+        self.assertEqual(sections[1]["before"]["words"], 2 + 4)
 
 
 if __name__ == "__main__":

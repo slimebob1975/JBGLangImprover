@@ -84,6 +84,9 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     const temperature = parseFloat(document.getElementById("temperature").value);
     const includeMotivations = document.getElementById("includeMotivations").checked;
     const docxMode = document.querySelector('input[name="docxMode"]:checked').value;
+    const includeAboutSection = document.getElementById("includeAboutSection").checked;
+    const computeLix = document.getElementById("computeLix").checked;
+    const globalReview = document.getElementById("globalReview").checked;
 
     if (!file || !apiKey) {
         updateStatus("❌ Du måste välja en fil och ange din API-nyckel.", "status-error");
@@ -101,6 +104,9 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     formData.append("temperature", temperature);
     formData.append("include_motivations", includeMotivations);
     formData.append("docx_mode", docxMode);
+    formData.append("include_about_section", includeAboutSection);
+    formData.append("compute_lix", computeLix);
+    formData.append("global_review", globalReview);
 
     try {
         const res = await fetch("/upload/", {
@@ -114,6 +120,7 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     } catch (err) {
         console.error(err);
         updateStatus("❌ Tekniskt fel vid överföring.", "status-error");
+        unlockUI();
     }
 });
 
@@ -141,6 +148,7 @@ async function pollForResult(jobId, originalFilename) {
                     "status-error"
                 );
                 spinner.style.display = "none";
+                unlockUI();
                 return;
             }
 
@@ -185,6 +193,7 @@ async function downloadResult(jobId, originalFilename) {
         updateStatus("❌ Kunde inte hämta resultatfil.", "status-error");
     } finally {
         document.getElementById("spinner-container").style.display = "none";
+        unlockUI();
     }
 }
 
@@ -194,12 +203,28 @@ function updateStatus(message, className) {
     status.textContent = message;
 }
 
+// Kontroller som lockUI() har låst. unlockUI() låser bara upp dessa, så att
+// kontroller som redan var inaktiva (t.ex. en funktion som kommer senare eller
+// temperaturreglaget för GPT-5) förblir inaktiva efter körningen.
+let lockedByUI = [];
+
 function lockUI() {
-    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "simpleMarking", "trackedChanges", "button"];
+    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
+    lockedByUI = [];
     ids.forEach(id => {
         const el = document.getElementById(id);
-        if (el) el.disabled = true;
+        if (el && !el.disabled) {
+            el.disabled = true;
+            lockedByUI.push(el);
+        }
     });
+}
+
+// Låser upp formuläret när en körning är klar eller har misslyckats, så att
+// användaren kan starta en ny körning utan att ladda om sidan.
+function unlockUI() {
+    lockedByUI.forEach(el => { el.disabled = false; });
+    lockedByUI = [];
 }
 
 

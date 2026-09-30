@@ -39,6 +39,14 @@ LONG_WORD_MIN_LETTERS = 7
 # apostrof eller punkt utan blanksteg (a-kassor, 2020-talet, t.ex., 3.5).
 _WORD_RE = re.compile(r"[^\W_]+(?:[-'’.][^\W_]+)*", re.UNICODE)
 
+# Manuell radbrytning som troligen börjar en ny mening/listrad: nästa rad
+# börjar med versal, siffra eller punkttecken och föregående rad slutar inte
+# med kommatecken, semikolon eller tankstreck. Övriga radbrytningar är
+# layoutbrytningar mitt i en mening och behandlas som blanksteg.
+_LINE_BREAK_BOUNDARY_RE = re.compile(
+    r"(?<![,;–—-])[ \t]*[\r\n]+[ \t]*(?=[\"'”“(\[]?[A-ZÅÄÖÉÜ0-9•▪◦·*])"
+)
+
 # Meningsslut: . ! ? eller : följt av blanksteg och versal/siffra/citattecken,
 # eller av textens slut. Förkortningar som "t.ex. att" och decimaltal som
 # "3.5" ger därför ingen meningsgräns.
@@ -109,8 +117,7 @@ class DocumentReadabilityReport:
     sections: list[SectionReadability] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        before, after = self.before.lix, self.after.lix
-        delta = round(after - before, 1) if before is not None and after is not None else None
+        delta = rounded_lix_delta(self.before.lix, self.after.lix)
         return {
             "scope_types": list(self.scope_types),
             "headings_excluded": True,
@@ -143,19 +150,32 @@ def lix_band(lix: Optional[float]) -> Optional[str]:
     return LIX_BANDS[-1][1]
 
 
+def rounded_lix_delta(before: Optional[float], after: Optional[float]) -> Optional[float]:
+    """
+    Skillnaden beräknas från de avrundade värdena, så att den alltid stämmer
+    med de värden som visas (51.5 -> 51.6 ger 0.1, inte 0.0).
+    """
+    if before is None or after is None:
+        return None
+    return round(round(after, 1) - round(before, 1), 1)
+
+
 def text_stats(text: str) -> ReadabilityStats:
     """
     Räknar ord, meningar och långa ord i en text (ett element).
 
     Varje element med minst ett ord räknas som minst en mening, även utan
-    avslutande skiljetecken (punktlistor, tabellceller). Radbrytningar i ett
-    element behandlas som meningsgränser av samma skäl.
+    avslutande skiljetecken (punktlistor, tabellceller). En manuell
+    radbrytning räknas som meningsgräns bara när nästa rad ser ut att börja
+    en ny mening eller listrad (se _LINE_BREAK_BOUNDARY_RE); layoutbrytningar
+    mitt i en mening räknas som blanksteg.
     """
     stats = ReadabilityStats()
     if not text or not text.strip():
         return stats
 
-    for line in re.split(r"[\n\r]+", text):
+    for line in _LINE_BREAK_BOUNDARY_RE.split(text):
+        line = re.sub(r"\s+", " ", line)
         line_words = _WORD_RE.findall(line)
         if not line_words:
             continue
@@ -250,6 +270,35 @@ def _is_heading(element: dict) -> bool:
     return element.get("heading_level") is not None
 
 
+# Bildtexter och tabellrubriker har ofta outline level i mallen (för att synas
+# i navigeringsfönstret) men är inte avsnittsrubriker.
+_CAPTION_STYLE_TOKENS = ("caption", "beskrivning", "tabellrubrik", "figurrubrik", "diagramrubrik")
+_CAPTION_TEXT_RE = re.compile(
+    r"^\s*(?:tabell|figur|diagram|bild|karta|table|figure)\s+\d+", re.IGNORECASE
+)
+
+
+def is_caption(element: dict) -> bool:
+    style = f"{element.get('style_id') or ''} {element.get('style_name') or ''}".lower()
+    if any(token in style for token in _CAPTION_STYLE_TOKENS):
+        return True
+    return bool(_CAPTION_TEXT_RE.match(element.get("text") or ""))
+
+
+def is_section_heading(element: dict) -> bool:
+    """
+    En rubrik som öppnar ett avsnitt i dokumentets disposition: ett stycke i
+    brödtexten med rubriknivå >= 1 och synlig text. Rubriker i tabeller och
+    textrutor (faktarutor, skalor) samt bildtexter räknas inte.
+    """
+    return (
+        element.get("type") == "paragraph"
+        and (element.get("heading_level") or 0) >= 1
+        and bool((element.get("text") or "").strip())
+        and not is_caption(element)
+    )
+
+
 def compute_document_readability(
     structure: dict,
     suggestions: Optional[list[dict]] = None,
@@ -308,7 +357,8 @@ def _sections(
 ) -> list[SectionReadability]:
     """
     Grupperar löptexten per avsnitt på översta rubriknivån (lägsta
-    heading_level >= 1 i dokumentet). Kräver doc_order; saknas det
+    heading_level bland avsnittsrubrikerna, se is_section_heading).
+    Avsnitt utan löptext utelämnas. Kräver doc_order; saknas det
     returneras en tom lista.
     """
     ordered = [e for e in elements if e.get("doc_order") is not None]
@@ -316,7 +366,7 @@ def _sections(
         return []
     ordered.sort(key=lambda e: e["doc_order"])
 
-    levels = [e["heading_level"] for e in ordered if (e.get("heading_level") or 0) >= 1]
+    levels = [e["heading_level"] for e in ordered if is_section_heading(e)]
     if not levels:
         return []
     top_level = min(levels)
@@ -324,8 +374,8 @@ def _sections(
     sections: list[SectionReadability] = []
     current = SectionReadability(heading=None, heading_element_id=None)
     for element in ordered:
-        if element.get("heading_level") == top_level:
-            if current.before.words or current.heading is not None:
+        if is_section_heading(element) and element["heading_level"] == top_level:
+            if current.before.words or current.after.words:
                 sections.append(current)
             current = SectionReadability(
                 heading=(element.get("text") or "").strip(),
@@ -337,7 +387,7 @@ def _sections(
             current.before.add(stats[0])
             current.after.add(stats[1])
 
-    if current.before.words or current.heading is not None:
+    if current.before.words or current.after.words:
         sections.append(current)
     return sections
 

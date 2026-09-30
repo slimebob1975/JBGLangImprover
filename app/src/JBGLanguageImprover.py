@@ -15,6 +15,9 @@ try:
     from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
     from app.src.JBGUsageTracker import UsageTracker
     from app.src.JBGRunSummary import RunSummary
+    from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
+    from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
+    from app.src.JBGGlobalFindingsRenderer import GlobalFindingsRenderer
     from app.src.JBGReadabilityMetrics import (
         compute_document_readability,
         compute_document_readability_from_files,
@@ -28,6 +31,9 @@ except ModuleNotFoundError:
     from JBGTrackedChangesRenderer import TrackedChangesRenderer
     from JBGUsageTracker import UsageTracker
     from JBGRunSummary import RunSummary
+    from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
+    from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
+    from JBGGlobalFindingsRenderer import GlobalFindingsRenderer
     from JBGReadabilityMetrics import (
         compute_document_readability,
         compute_document_readability_from_files,
@@ -60,6 +66,10 @@ class JBGLanguageImprover:
         progress_callback=None,
         save_intermediate_json=True,
         docx_mode=None,
+        include_about_section=True,
+        prompt_customized=None,
+        compute_readability=True,
+        global_review=False,
         **kwargs,
     ):
         self.input_path = input_path
@@ -73,6 +83,9 @@ class JBGLanguageImprover:
         self.save_intermediate_json = save_intermediate_json
 
         self.docx_mode = docx_mode or "simple"
+        self.include_about_section = bool(include_about_section)
+        self.compute_readability = bool(compute_readability)
+        self.global_review = bool(global_review)
         self.extra_kwargs = kwargs
 
         if self.docx_mode not in {"simple", "tracked"}:
@@ -93,6 +106,10 @@ class JBGLanguageImprover:
         self.run_summary_json = input_path.replace(
             os.path.splitext(input_path)[1], "_run_summary.json"
         )
+        self.global_findings_json = input_path.replace(
+            os.path.splitext(input_path)[1], "_global_findings.json"
+        )
+        self.global_result = None
 
         self.usage_tracker = UsageTracker()
         self.run_summary = RunSummary(
@@ -101,6 +118,10 @@ class JBGLanguageImprover:
             docx_mode=self.docx_mode,
             temperature=temperature,
             include_motivations=bool(include_motivations),
+            include_about_section=self.include_about_section,
+            prompt_customized=prompt_customized,
+            compute_readability=self.compute_readability,
+            global_review=self.global_review,
         )
 
         self.structure = None
@@ -128,8 +149,14 @@ class JBGLanguageImprover:
             self._report("Skickar dokumentet till språkmodellen för förslag...")
             self.validated_suggestions = self._generate_suggestions()
 
-            self._report("Beräknar läsbarhet (LIX) före och efter...")
-            self._compute_readability()
+            if self.compute_readability:
+                self._report("Beräknar läsbarhet (LIX) före och efter...")
+                self._compute_readability()
+            else:
+                self.logger.info("LIX computation disabled by user")
+
+            if self.global_review:
+                self._run_global_review()
 
             self._report("Bygger ändringsplan...")
             self.change_plans = self._build_change_plans()
@@ -286,6 +313,10 @@ class JBGLanguageImprover:
 
             self.render_results = renderer.apply_plans(self.change_plans)
 
+            counts = self.run_summary.local_suggestions
+            counts.applied = len([r for r in self.render_results if r.applied])
+            counts.failed = len([r for r in self.render_results if not r.applied])
+
             self.comment_results = []
             if self.include_motivations and self.docx_mode == "tracked":
                 comments_renderer = CommentsRenderer(pkg, self.logger)
@@ -302,15 +333,20 @@ class JBGLanguageImprover:
                         label = f"{target.element_type}:{target.element_id}"
                         self.logger.warning(f"Comment skipped/failed for {label}: {result.message}")
 
+            self.run_summary.local_suggestions.comments_applied = len(
+                [r for r in self.comment_results if r.applied]
+            )
+
+            if self.global_result is not None and self.global_result.findings:
+                self._render_global_findings(pkg)
+
+            if self.include_about_section:
+                self._render_about_section(pkg)
+
             final_output_path = pkg.save(output_path)
 
-        applied_count = len([r for r in self.render_results if r.applied])
-        failed_count = len([r for r in self.render_results if not r.applied])
-
-        counts = self.run_summary.local_suggestions
-        counts.applied = applied_count
-        counts.failed = failed_count
-        counts.comments_applied = len([r for r in self.comment_results if r.applied])
+        applied_count = self.run_summary.local_suggestions.applied
+        failed_count = self.run_summary.local_suggestions.failed
 
         self.logger.info(f"Render mode: {self.docx_mode}")
         self.logger.info(f"Render applied: {applied_count}")
@@ -327,6 +363,70 @@ class JBGLanguageImprover:
     # ------------------------------------------------------------------
     # Hjälpare
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Steg 2c: Global granskning (dokumentnivå)
+    # ------------------------------------------------------------------
+
+    def _run_global_review(self):
+        """Fel här får aldrig stoppa körningen; det lokala resultatet levereras ändå."""
+        self._report("Granskar dokumentet som helhet...")
+        try:
+            analyzer = JBGGlobalAnalyzerAI(
+                api_key=self.api_key,
+                model=self.model,
+                temperature=self.temperature,
+                logger=self.logger,
+                usage_tracker=self.usage_tracker,
+                progress_callback=self.progress_callback,
+            )
+            self.global_result = analyzer.analyze(self.structure)
+            self.run_summary.global_findings = self.global_result.summary()
+            if self.save_intermediate_json:
+                path = self.global_result.save(self.global_findings_json)
+                self.logger.info(f"Saved global findings JSON: {path}")
+        except Exception as ex:
+            self.logger.error(f"Global review failed: {ex}")
+            self.global_result = None
+            self.run_summary.global_findings = {"accepted": 0, "errors": [str(ex)]}
+
+    def _render_global_findings(self, pkg):
+        self._report("Lägger till kommentarer från den globala granskningen...")
+        try:
+            results = GlobalFindingsRenderer(pkg, self.logger, self.structure).apply(
+                self.global_result.findings
+            )
+            applied = len([r for r in results if r.applied])
+        except Exception as ex:
+            self.logger.warning(f"Could not render global findings: {ex}")
+            applied = 0
+        if self.run_summary.global_findings is not None:
+            self.run_summary.global_findings["comments_applied"] = applied
+
+    # ------------------------------------------------------------------
+    # Steg 5: Avsnittet "Om klarspråkningen"
+    # ------------------------------------------------------------------
+
+    def _render_about_section(self, pkg):
+        """Fel här får aldrig stoppa körningen; dokumentet levereras ändå."""
+        self._report("Lägger till avsnittet Om klarspråkningen...")
+        try:
+            self.run_summary.usage = self.usage_tracker.to_dict()
+            blocks = build_about_section_blocks(
+                self.run_summary.to_dict(), tracked=self.docx_mode == "tracked"
+            )
+            result = AboutSectionRenderer(pkg, self.logger).apply(
+                blocks, tracked=self.docx_mode == "tracked"
+            )
+            self.run_summary.about_section = {
+                "applied": result.applied,
+                "message": result.message,
+                "heading_style_id": result.heading_style_id,
+                "replaced_existing": result.replaced_existing,
+            }
+        except Exception as ex:
+            self.logger.warning(f"Could not add 'Om klarspråkningen' section: {ex}")
+            self.run_summary.about_section = {"applied": False, "message": str(ex)}
 
     def _save_run_summary(self):
         self.run_summary.usage = self.usage_tracker.to_dict()

@@ -9,6 +9,11 @@ from typing import Optional, Any
 from lxml import etree
 from zipfile import ZipFile
 
+try:
+    from app.src.JBGAboutSectionRenderer import AboutSectionRenderer
+except ModuleNotFoundError:
+    from JBGAboutSectionRenderer import AboutSectionRenderer
+
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -95,8 +100,15 @@ class DocumentStructureExtractor:
         paragraph_blocks, table_blocks = self._body_block_positions(doc)
         order_keys: dict[str, tuple] = {}
 
+        # Ett tidigare genererat avsnitt "Om klarspråkningen" granskas inte.
+        # Det ligger sist i dokumentet, så numreringen av övriga stycken
+        # påverkas inte när dess stycken hoppas över.
+        excluded_paragraphs = self._about_section_paragraph_indices(doc)
+
         # 1. Paragraphs in main document
         for i, para in enumerate(doc.paragraphs, start=1):
+            if i in excluded_paragraphs:
+                continue
             text = para.text or ""
             style_id, style_name, heading_level = self._paragraph_style_info(para._element)
             order_keys[f"paragraph_{i}"] = (paragraph_blocks.get(i), 0, 0)
@@ -160,6 +172,8 @@ class DocumentStructureExtractor:
         # 4. Textboxes (main document)
         textbox_counter = 1
         for pi, para in enumerate(doc.paragraphs, start=1):
+            if pi in excluded_paragraphs:
+                continue
             textboxes = self._extract_textboxes_from_paragraph(para)
             for tbx_local_index, box_info in enumerate(textboxes, start=1):
                 for textbox_paragraph_index, textbox_text in enumerate(
@@ -296,6 +310,17 @@ class DocumentStructureExtractor:
         if name.lower() in self.TITLE_NAMES:
             return style_id, style_name, 0
         return style_id, style_name, None
+
+    def _about_section_paragraph_indices(self, doc) -> set[int]:
+        """1-baserade index (som doc.paragraphs) för stycken i Om klarspråkningen."""
+        section_range = AboutSectionRenderer.find_section_range(doc.element.body)
+        if section_range is None:
+            return set()
+        start, end = section_range
+        self.logger.info(
+            f"Skipping existing 'Om klarspråkningen' section (paragraphs {start + 1}-{end + 1})"
+        )
+        return set(range(start + 1, end + 2))
 
     def _body_block_positions(self, doc) -> tuple[dict[int, int], dict[int, int]]:
         """

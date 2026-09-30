@@ -81,6 +81,10 @@ def load_prompt_parts(prompt_path):
 
     return editable_part, locked_part_before, locked_part_after
 
+def _normalize_prompt(text: str) -> str:
+    """Jämförelse utan hänsyn till radslut och blanksteg (textarea ändrar ofta dessa)."""
+    return " ".join((text or "").split())
+
 def validate_prompt(editable_part: str):
     """
     Validates the user-edited prompt to ensure it does not accidentally include forbidden system markers.
@@ -165,7 +169,10 @@ async def upload_file(
     editable_prompt: str = Form(""),
     temperature: float = Form(0.7),
     include_motivations: bool = Form(True),
-    docx_mode: str = Form("simple")
+    docx_mode: str = Form("simple"),
+    include_about_section: bool = Form(True),
+    compute_lix: bool = Form(True),
+    global_review: bool = Form(False),
 ):
     # Generate job ID and paths
     job_id = str(uuid.uuid4())
@@ -194,12 +201,17 @@ async def upload_file(
     logger.info(f"🌡️ Temperature: {temperature}")
     logger.info(f"💬 Include motivations: {include_motivations}")
     logger.info(f"📝 DOCX markup mode: {docx_mode}")
+    logger.info(f"ℹ️ Include 'Om klarspråkningen' section: {include_about_section}")
+    logger.info(f"📊 Compute LIX: {compute_lix}")
+    logger.info(f"🌐 Global review: {global_review}")
 
     # Extract prompt parts and validate
     editable_part = editable_prompt.strip()
-    _, locked_before, locked_after = load_prompt_parts(os.path.join(BASE_DIR, "policy", "prompt_policy.md"))
+    default_editable, locked_before, locked_after = load_prompt_parts(os.path.join(BASE_DIR, "policy", "prompt_policy.md"))
     full_prompt = f"{locked_before}\n\n{editable_part}\n\n{locked_after}"
     validate_prompt(full_prompt)
+    prompt_customized = _normalize_prompt(editable_part) != _normalize_prompt(default_editable)
+    logger.info(f"✏️ Prompt customized: {prompt_customized}")
 
         # Background processing
     def run_language_improvement():
@@ -219,6 +231,10 @@ async def upload_file(
                 docx_mode=docx_mode,
                 logger=logger,
                 progress_callback=progress_callback,
+                include_about_section=include_about_section,
+                prompt_customized=prompt_customized,
+                compute_readability=compute_lix,
+                global_review=global_review,
             )
             result = improver.run()
             shutil.move(result, output_path)

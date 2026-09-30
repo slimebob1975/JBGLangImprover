@@ -29,6 +29,10 @@ class RunSummary:
     docx_mode: str
     temperature: Optional[float] = None
     include_motivations: bool = False
+    include_about_section: bool = True
+    compute_readability: bool = True
+    global_review: bool = False
+    prompt_customized: Optional[bool] = None   # None = okänt (t.ex. CLI-körning)
     started_at: str = field(default_factory=lambda: _now())
     finished_at: Optional[str] = None
     succeeded: bool = False
@@ -37,6 +41,10 @@ class RunSummary:
     local_suggestions: SuggestionCounts = field(default_factory=SuggestionCounts)
     usage: dict[str, Any] = field(default_factory=dict)
     readability: Optional[dict[str, Any]] = None
+    about_section: Optional[dict[str, Any]] = None
+    # Global granskning: parts, raw, accepted, rejected, by_category, errors,
+    # comments_applied. None när den globala granskningen inte kördes.
+    global_findings: Optional[dict[str, Any]] = None
 
     def finish(self, succeeded: bool, error: Optional[str] = None) -> None:
         self.finished_at = _now()

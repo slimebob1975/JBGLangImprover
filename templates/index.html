@@ -13,14 +13,14 @@
         <h1 name="app-title" id="app-title">JBG klarspråkning</h1>
         <h3><em>För .docx-filer</em></h3>
         <form id="uploadForm">
-            <label for="documentFile" title="Endast .pdf- och .docx-filer accepteras"><strong>Ladda upp din text:</strong></label><br>
-            <input type="file" id="documentFile" name="file" accept=".docx" required><br><br>
-          
-            <label><strong>Inställningar för språkmodellen</strong></label>
-            <label for="apiKey" title="API-nyckeln är en form av lösenord som du får av lokalsamordnaren">Skriv in din OpenAI API-nyckel:</label><br>
-            <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required><br><br>
-          
-            <label for="model" title="Nyare modeller är bättre men dyrare att använda">Välj språkmodell för granskningen:</label><br>
+            <label for="documentFile" class="form-section" title="Endast .docx-filer accepteras">Ladda upp din text:</label>
+            <input type="file" id="documentFile" name="file" accept=".docx" required>
+
+            <label class="form-section">Inställningar för språkmodellen</label>
+            <label for="apiKey" title="API-nyckeln är en form av lösenord som du får av lokalsamordnaren">Skriv in din OpenAI API-nyckel:</label>
+            <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required>
+
+            <label for="model" title="Nyare modeller är bättre men dyrare att använda">Välj språkmodell för granskningen:</label>
             <select id="model" name="model">
                 <option value="gpt-5.6-terra" >gpt-5.6-terra</option>
                 <option value="gpt-5.6-luna" >gpt-5.6-luna</option>
@@ -30,10 +30,17 @@
                 <option value="gpt-5">gpt-5</option>
                 <option value="gpt-5-mini">gpt-5-mini</option>
                 <option value="gpt-4o">gpt-4o</option>
-            </select><br><br>
-          
-            <label for="editablePrompt" title="Om du vill ge särskilda instruktioner till språkmodellen, kan du ändra den här standardtexten.">Anpassa promptsinstruktionen:</label><br>
-            <textarea id="editablePrompt" name="editablePrompt" rows="6" placeholder="Laddar policy..." required></textarea><br><br>
+            </select>
+
+            <label for="editablePrompt" title="Instruktionen gäller förslagen inom enskilda stycken, tabellceller, fotnoter, sidhuvuden och sidfötter. Om du vill ge särskilda instruktioner till språkmodellen kan du ändra standardtexten.">Anpassa den lokala promptinstruktionen:</label>
+            <textarea id="editablePrompt" name="editablePrompt" rows="6" placeholder="Laddar policy..." required></textarea>
+
+            <!-- Globala inställningar (dokumentnivå) -->
+            <label class="form-section">Globala inställningar</label>
+            <div class="form-check" title="Språkmodellen läser dokumentet som helhet och markerar iakttagelser med kommentarer i Word. I den här versionen: onödiga upprepningar, påståenden som säger emot varandra, troliga fel som kvarlämnad arbetstext samt förslag om avsnittens ordning och om rubriker som inte stämmer med innehållet. Fler kontroller, till exempel slutsatser utan stöd i texten, kommer senare. Tar längre tid och kostar fler tokens.">
+                <input type="checkbox" id="globalReview" name="globalReview">
+                <label for="globalReview">Granska dokumentets struktur och upplägg</label>
+            </div>
 
             <!-- Temperature Slider (obsolete from GPT-5 models) -->
             <div style="display: none;">
@@ -43,17 +50,28 @@
                     <span id="tempDisplay">0.7</span>
                 </div>
             </div>
-            <label><strong>Hur ska resultatet se ut?</strong></label>
+            <label class="form-section">Hur ska resultatet se ut?</label>
             <!-- DOCX Markup Mode -->
-            <div>
-                <label>Visa förslag till förändringarna med:</label>
-                <div class="form-inline" id="doxcModeRadioButtons" name="doxcModeRadioButtons">
+            <div id="doxcModeRadioButtons" role="radiogroup" aria-labelledby="docxModeLabel">
+                <label id="docxModeLabel">Visa förslag till förändringarna med:</label>
+                <div class="form-check" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
-                    <label for="simpleMarking" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">Enkel färgmarkering</label>
-
-                    <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
-                    <label for="trackedChanges" title="Använd Word-inställningen 'Spåra ändringar'">Spåra ändringar och infogade kommentarer</label>
+                    <label for="simpleMarking">Enkel färgmarkering</label>
                 </div>
+                <div class="form-check" title="Använd Word-inställningen 'Spåra ändringar'">
+                    <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
+                    <label for="trackedChanges">Spåra ändringar och infogade kommentarer</label>
+                </div>
+            </div>
+            <!-- Övrigt -->
+            <label class="form-section">Övrigt</label>
+            <div class="form-check" title="Avsnittet beskriver granskningen: språkmodell, antal tokens, antal förslag och läsbarhet (LIX) före och efter. Med Spåra ändringar infogas det som en spårad ändring som du kan avvisa i ett steg.">
+                <input type="checkbox" id="includeAboutSection" name="includeAboutSection" checked>
+                <label for="includeAboutSection">Lägg till ”Om klarspråkningen” sist</label>
+            </div>
+            <div class="form-check" title="LIX (läsbarhetsindex) bygger på meningarnas längd och andelen långa ord. Värdena visas i avsnittet Om klarspråkningen och sparas i körningens sammanfattning, även när avsnittet inte läggs till.">
+                <input type="checkbox" id="computeLix" name="computeLix" checked>
+                <label for="computeLix">Beräkna LIX-värde före och efter granskning</label>
             </div>
              <div class="form-inline" style="display: none;">
                 <label for="includeMotivations" title="Språkmodellen genererar motiveringar till förändringsförslagen, och dessa läggs som kommentarer i dokumentet">Lägg till kommentarer till förslagen ("Spåra ändringar"):</label>
@@ -70,8 +88,8 @@
         <p id="status"></p>
 
     </div> <!-- Wrapper -->
-     <footer style="margin-top: 40px; font-size: 0.9em; color: #555; text-align: center;">
-        AI kan göra misstag. Du är själv ansvarig för att kontrollera resultatet. <br> <br>
+     <footer style="margin-top: 16px; font-size: 0.9em; color: #555; text-align: center; line-height: 1.5;">
+        AI kan göra misstag. Du är själv ansvarig för att kontrollera resultatet.<br>
         Har du problem med tjänsten? Prova att ladda om den med Ctrl-Shift-R.
     </footer>
 </body>

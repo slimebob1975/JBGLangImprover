@@ -74,3 +74,43 @@ class SpellingDegradationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ZeroSuggestionsTests(unittest.TestCase):
+    """Noll förslag får inte leda till att hela granskningen körs en gång till."""
+
+    def test_saving_an_empty_result_does_not_call_the_model_again(self):
+        import json
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+        from app.src import JBGLangImprovSuggestorAI as module
+
+        calls = {"n": 0}
+
+        def create(**kwargs):
+            calls["n"] += 1
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))], usage=None,
+            )
+
+        logger = logging.getLogger(f"zero-suggestions-{id(self)}")
+        logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(module.openai, "OpenAI", return_value=client):
+            structure_path = f"{tmp}/s.json"
+            with open(structure_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "docx", "elements": [
+                    {"type": "paragraph", "element_id": "paragraph_1", "text": "Kort text."}
+                ]}, f)
+            suggestor = JBGLangImprovSuggestorAI(
+                api_key="unused", model="m", prompt_policy="p", temperature=1, logger=logger,
+            )
+            suggestor.load_structure(structure_path)
+            suggestor.suggest_changes_token_aware_batching()
+            suggestor.save_as_json(f"{tmp}/out.json", use_validated=True)
+
+        self.assertEqual(calls["n"], 1)
