@@ -135,7 +135,6 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     } catch (err) {
         console.error(err);
         updateStatus("❌ Tekniskt fel vid överföring.", "status-error");
-        unlockUI();
     }
 });
 
@@ -163,7 +162,6 @@ async function pollForResult(jobId, originalFilename) {
                     "status-error"
                 );
                 spinner.style.display = "none";
-                unlockUI();
                 return;
             }
 
@@ -208,7 +206,6 @@ async function downloadResult(jobId, originalFilename) {
         updateStatus("❌ Kunde inte hämta resultatfil.", "status-error");
     } finally {
         document.getElementById("spinner-container").style.display = "none";
-        unlockUI();
     }
 }
 
@@ -218,28 +215,15 @@ function updateStatus(message, className) {
     status.textContent = message;
 }
 
-// Kontroller som lockUI() har låst. unlockUI() låser bara upp dessa, så att
-// kontroller som redan var inaktiva (t.ex. en funktion som kommer senare eller
-// temperaturreglaget för GPT-5) förblir inaktiva efter körningen.
-let lockedByUI = [];
-
+// Formuläret låses när en körning startar och förblir låst även när den är
+// klar eller har misslyckats. En ny körning kräver att sidan laddas om
+// (se tipset om Ctrl-Shift-R i sidfoten).
 function lockUI() {
     const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
-    lockedByUI = [];
     ids.forEach(id => {
         const el = document.getElementById(id);
-        if (el && !el.disabled) {
-            el.disabled = true;
-            lockedByUI.push(el);
-        }
+        if (el) el.disabled = true;
     });
-}
-
-// Låser upp formuläret när en körning är klar eller har misslyckats, så att
-// användaren kan starta en ny körning utan att ladda om sidan.
-function unlockUI() {
-    lockedByUI.forEach(el => { el.disabled = false; });
-    lockedByUI = [];
 }
 
 

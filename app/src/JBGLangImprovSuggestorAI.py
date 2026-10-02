@@ -10,6 +10,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Literal, Any
 
+try:
+    from app.src.JBGModelClient import create_openai_client
+except ModuleNotFoundError:
+    from JBGModelClient import create_openai_client
+
 MAX_TOKEN_PER_CALL = 8000
 
 
@@ -385,7 +390,7 @@ class JBGLangImprovSuggestorAI:
         self._ensure_structure_loaded()
         self.logger.info(f"The used prompt policy:\n{str(self.policy_prompt)}\n")
 
-        client = openai.OpenAI(api_key=self.api_key)
+        client = create_openai_client(self.api_key)
         messages = [
             {"role": "system", "content": self.policy_prompt},
             {
@@ -416,7 +421,7 @@ class JBGLangImprovSuggestorAI:
         self._report("Promptpolicyn laddad. Förbereder API-anrop...")
         self.logger.info(f"The used prompt policy:\n{str(self.policy_prompt)}\n")
 
-        client = openai.OpenAI(api_key=self.api_key)
+        client = create_openai_client(self.api_key)
         system_msg = {"role": "system", "content": self.policy_prompt}
         structure = self.json_structured_document
 
@@ -427,15 +432,18 @@ class JBGLangImprovSuggestorAI:
         chunks = self._chunk_elements(elements, max_tokens_per_call=max_tokens_per_call)
         num_chunks = len(chunks)
 
-        self._report(f"Dokumentet är stort. Skickar {num_chunks} separata API-anrop.")
+        self._report(
+            "Skickar dokumentet till språkmodellen i ett anrop."
+            if num_chunks == 1 else
+            f"Skickar dokumentet till språkmodellen i {num_chunks} anrop."
+        )
 
         all_raw_suggestions: list[dict[str, Any]] = []
         all_validated: list[SuggestedChange] = []
 
+        # Ingen fast paus mellan anropen: OpenAI-biblioteket försöker själv igen
+        # vid hastighetsbegränsning och tillfälliga fel (se JBGModelClient).
         for i, chunk in enumerate(chunks, start=1):
-            if i > 1:
-                time.sleep(5)
-
             self._report(f"Gör API-anrop {i} av {num_chunks}.")
             messages = [system_msg, self._build_user_message_for_chunk(chunk)]
 

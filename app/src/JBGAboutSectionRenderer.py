@@ -36,8 +36,10 @@ from lxml import etree
 
 try:
     from app.src.JBGDocxPackage import DocxPackage
+    from app.src.JBGRevisionIds import max_revision_id
 except ModuleNotFoundError:
     from JBGDocxPackage import DocxPackage
+    from JBGRevisionIds import max_revision_id
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -64,14 +66,6 @@ SWEDISH_MONTHS = (
     "juli", "augusti", "september", "oktober", "november", "december",
 )
 
-# Taggar vars w:id ingår i samma id-rymd som spårade ändringar.
-_REVISION_TAGS = {
-    f"{W}{name}" for name in (
-        "ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange",
-        "sectPrChange", "tblPrChange", "trPrChange", "tcPrChange",
-        "tblGridChange", "numberingChange", "cellIns", "cellDel", "cellMerge",
-    )
-}
 
 # Ordning för barn i w:pPr enligt schemat (de som den här modulen berör).
 _PPR_TAIL_TAGS = (f"{W}sectPr", f"{W}pPrChange")
@@ -351,7 +345,7 @@ class AboutSectionRenderer:
         previous_last = self._last_block(body)
 
         if tracked:
-            self._next_id = self._max_revision_id() + 1
+            self._next_id = max_revision_id(self.package) + 1
             for element in elements:
                 if element.tag == f"{W}tbl":
                     self._mark_table_inserted(element, timestamp)
@@ -762,22 +756,6 @@ class AboutSectionRenderer:
         element.set(f"{W}author", self.author)
         element.set(f"{W}date", timestamp)
         return element
-
-    def _max_revision_id(self) -> int:
-        highest = 0
-        for part_name in self.package.list_parts():
-            if not (part_name.startswith("word/") and part_name.endswith(".xml")):
-                continue
-            try:
-                root = self.package.read_xml_root(part_name)
-            except Exception:
-                continue
-            for element in root.iter():
-                if element.tag in _REVISION_TAGS:
-                    value = element.get(f"{W}id") or ""
-                    if value.isdigit():
-                        highest = max(highest, int(value))
-        return highest
 
     @staticmethod
     def _can_extend_last_paragraph(block: Optional[etree._Element]) -> bool:

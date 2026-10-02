@@ -6,8 +6,10 @@ from lxml import etree
 
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
+    from app.src.JBGRevisionIds import max_revision_id
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
+    from JBGRevisionIds import max_revision_id
 
 try:
     from app.src.JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
@@ -62,7 +64,9 @@ class TrackedChangesRenderer:
         if self.package.part_exists("word/footnotes.xml"):
             self.footnotes_adapter = FootnotesPartAdapter(package, logger)
 
-        self.change_id_counter = 1
+        # Fortsätt från det högsta id som redan finns, så att nya ändringar inte
+        # krockar med spårade ändringar i originalet (kommentarer förankras via id).
+        self.change_id_counter = max_revision_id(package) + 1
         self._ensure_track_revisions_enabled()
 
     # ------------------------------------------------------------------

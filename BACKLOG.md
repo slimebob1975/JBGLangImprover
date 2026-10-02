@@ -5,19 +5,16 @@
 - [ ] The comment module does add comments to footnotes changes, but they do not render properly in Word
 - [ ] Safety checks reject some legitimate rewrites, e.g. `2024-09-24` -> `den 24 september 2024` and `rättslig grund` -> `lagstöd` (`low_similarity`), and many multi-sentence rewrites (`old_looks_truncated`, `replacement_causes_obvious_duplication`); 43 of 134 raw suggestions were rejected in test run 93dbc428
 - [ ] Span minimization can cut a proposal into word fragments that the safety checks then reject, so good corrections are lost. Test run ba144f3d: `bl.a.` -> `bland annat` arrived as `'.a.'` -> `'and annat'` (`old_looks_truncated`); the misspelling `diagranm` and `STs` -> `ST:s` were also rejected. Confirm with `<job>_suggestion_filter_report.json`
-- [ ] `TrackedChangesRenderer` starts revision ids at 1 regardless of existing revisions in the document, so ids can collide with tracked changes already in the source
 - [ ] Simple markup fails on some long rewrites in paragraphs with manual line breaks ("Invalid last_local_end" in `JBGSimpleMarkupRenderer`; test run b02ce006, paragraph_53 and paragraph_115). Tracked changes already handles anchors at line breaks; port the same fix and add a regression test
 - [ ] Global findings vary considerably between runs of the same document (e.g. a within-section repetition found in two runs and missing in the third); consider a lower temperature for the global call where the model allows it
 - [ ] Hidden text is extracted as if it were visible. Confirmed: the template note "Ta ej bort denna avsnittsbrytning!!" (test runs b391e3ac and 905c7230, paragraph_127) is hidden template text and was flagged as "Troligt fel" in both runs. Fix in the extractor: leave out paragraphs whose text is entirely hidden, so they are not reviewed, not counted in LIX and cannot carry a comment. Hidden means `w:vanish` (or `w:specVanish`) on the run, from the run's character style, or from the paragraph style. Element ids of other paragraphs must not change (skip the paragraph, keep the numbering). Partly hidden paragraphs are kept as they are, since removing hidden words would shift the anchors of local proposals. Natural to do together with the content-control item and G3.f, which also change the extractor
 - [ ] The extractor does not read content inside body-level content controls (`w:sdt`), because it only reads paragraphs and tables directly in the body. Text there is neither reviewed locally nor globally, and the global review sees an empty section. Test run 905c7230: the heading "Innehåll" got "Förslag om rubrik" because its automatically generated table of contents (a content control) was invisible. Check which templates put real text (cover fields, standard text) in content controls
-- [ ] Fixed 5 s pause between API calls (about 50 s of a 5.5 min run with 11 calls); replace with retry/backoff on rate-limit errors
 
 ## Planned improvments
 
 ### GUI
 
 - [x] Show "Inloggad som: …" at the top of the page, like the sister service: `/me` returns the name from Azure App Service authentication (header `X-MS-CLIENT-PRINCIPAL-NAME`, URL-decoded, max 200 characters) and `script.js` shows it under the subtitle. Without a login (e.g. locally) the line reads "Inloggad som: okänd användare", like the sister service; if the call fails, the line stays hidden. Display only: the name is never used for authorization
-- [ ] Roll back the unlocking of the form after a run: keep all controls locked when a run finishes or fails, so a new run requires reloading the page (consistent with the footer hint about Ctrl-Shift-R). Remove the `unlockUI()` calls in `script.js` (submit error, status error, download `finally`); `lockUI()` can keep its `lockedByUI` bookkeeping or return to the original version
 
 ### EPIC: Global (document-level) language improvement layer
 
@@ -124,7 +121,10 @@ Finding categories, to be implemented in this order:
 ## Solved
 
 - [x] The local review ran twice when the model returned zero suggestions (`save_as_json` re-ran the whole review), doubling time and token cost
-- [x] GUI: the form is unlocked when a run finishes or fails, so a new run does not require reloading the page (controls that were already disabled stay disabled) — to be reverted, see Planned improvments / GUI
+- [x] GUI: the form is unlocked when a run finishes or fails (later reverted, see below)
+- [x] GUI: the form stays locked after a run finishes or fails; a new run requires reloading the page (consistent with the footer hint about Ctrl-Shift-R)
+- [x] `TrackedChangesRenderer` numbers new revisions from the highest revision id already in the document (shared helper `JBGRevisionIds.max_revision_id`, also used by the "Om klarspråkningen" section), so they cannot collide with tracked changes in the original
+- [x] No fixed 5 s pause between API calls: the OpenAI library already retries on rate limits (429), server errors, timeouts and dropped connections, with growing waits and respect for Retry-After. The number of retries is set in one place (`JBGModelClient.MODEL_CALL_MAX_RETRIES = 4`). Saves about 5 s per extra call
 - [x] `CommentsRenderer` can anchor a comment to a whole paragraph (`add_paragraph_comment`), not only to tracked revisions (G4.1)
 - [x] "Om klarspråkningen": cached prompt tokens are shown ("varav N återanvända (lägre kostnad)") so the cost is not overestimated
 - [x] LIX: manual line breaks inside a sentence are no longer counted as sentence boundaries

@@ -23,8 +23,10 @@ from typing import Any, Optional
 import openai
 
 try:
+    from app.src.JBGModelClient import create_openai_client
     from app.src.JBGReadabilityMetrics import is_caption, is_section_heading
 except ModuleNotFoundError:
+    from JBGModelClient import create_openai_client
     from JBGReadabilityMetrics import is_caption, is_section_heading
 
 
@@ -235,7 +237,6 @@ class JBGGlobalAnalyzerAI:
         usage_tracker=None,
         progress_callback=None,
         max_chars_per_part: int = MAX_OUTLINE_CHARS_PER_PART,
-        pause_seconds: float = 0.0,
     ):
         self.api_key = api_key
         self.model = model
@@ -245,7 +246,6 @@ class JBGGlobalAnalyzerAI:
         self.usage_tracker = usage_tracker
         self.progress_callback = progress_callback
         self.max_chars_per_part = max_chars_per_part
-        self.pause_seconds = pause_seconds
 
     # ------------------------------------------------------------------
     # Publikt API
@@ -266,11 +266,9 @@ class JBGGlobalAnalyzerAI:
                 "repetitions across parts may be missed"
             )
 
-        client = openai.OpenAI(api_key=self.api_key)
+        client = create_openai_client(self.api_key)
         raw_findings: list[tuple[int, Any]] = []
         for index, part in enumerate(parts, start=1):
-            if index > 1 and self.pause_seconds:
-                time.sleep(self.pause_seconds)
             # Orkestreraren rapporterar redan starten; här bara delar.
             if len(parts) > 1:
                 self._report(f"Granskar dokumentet som helhet (del {index} av {len(parts)})...")
