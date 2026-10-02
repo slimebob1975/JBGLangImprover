@@ -57,7 +57,7 @@ the global step fails, the run still delivers the locally improved document.
 - [x] G2.6 GUI layout: compact vertical spacing, left-aligned radio buttons and checkboxes, section headings "Globala inställningar" and "Övrigt", prompt label "Anpassa den lokala promptinstruktionen"
   - The form is split into five grey panels (`fieldset` + `legend`, class `settings-panel`, same look as the sister service): "Ladda upp din text", "Inställningar för språkmodellen", "Dokumentinställningar" (renamed from "Globala inställningar"), "Hur ska resultatet se ut?" and "Övrigt". The form's own white card is removed
   - Tooltips reviewed against the service: file (new file, original unchanged), model (used for both reviews), local prompt (includes text boxes, does not affect the document review), structure review (no "kommer senare", text is never changed), LIX ("after" assumes all proposals accepted), simple markup (struck through in red, no comments), tracked changes (with motivating comments), "Om klarspråkningen" (global findings, LIX only if computed)
-  - The title, subtitle and "Inloggad som" line are aligned with the left edge of the panels (same width and centering as the form) at any screen width
+  - The title, subtitle and "Inloggad som" line are aligned with the left edge of the panels (same width and centering as the form) at any screen width, with the same vertical spacing between them as the sister service (about 18, 16 and 14 px)
 
 #### Phase 3 - Global analyzer (LLM)
 

@@ -21,16 +21,18 @@ body {
 }
 
 /* === Rubriker === */
+/* Avstånden mellan rubrik, underrubrik och användarrad motsvarar
+   systertjänsten (cirka 18, 16 och 14 px). */
 h1 {
     /* color: #2979be; */ /* Tidigare */
     color: #005293;
-    margin: 0 0 0.25rem 0;
+    margin: 0 0 1.15rem 0;
 }
 
 h3 {
     font-weight: normal;
     color: #444;
-    margin: 0 0 0.75rem 0;
+    margin: 0 0 1rem 0;
 }
 
 /* === Filuppladdning === */
@@ -129,7 +131,7 @@ form label {
 
 /* === Inloggad användare, under underrubriken === */
 .user-display {
-    margin: -0.5rem 0 0.75rem 0;
+    margin: 0 0 0.9rem 0;
     font-size: 0.85rem;
     font-style: italic;
     color: #555;
