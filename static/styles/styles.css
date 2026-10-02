@@ -115,6 +115,18 @@ form label {
     margin-bottom: 4px;
 }
 
+/* === Texterna överst linjeras med panelernas vänsterkant ===
+   Samma bredd och centrering som formuläret (max-width i regeln "form"),
+   så att rubrik, underrubrik och användarrad börjar där panelerna börjar,
+   oavsett skärmbredd. */
+#wrapper > h1,
+#wrapper > h3,
+#wrapper > .user-display {
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 /* === Inloggad användare, under underrubriken === */
 .user-display {
     margin: -0.5rem 0 0.75rem 0;
