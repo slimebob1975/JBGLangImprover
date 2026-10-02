@@ -71,6 +71,10 @@ MIN_LOCATIONS = {
 CATEGORIES_REQUIRING_RELATED_QUOTE = {"inconsistency"}
 
 OUTLINE_TYPES = ("paragraph", "table_cell", "textbox")
+# Platshållare för automatiskt genererat innehåll visas i dispositionen, så att
+# en rubrik ovanför en innehållsförteckning inte ser tom ut, men kan aldrig
+# vara ankare eller del av en iakttagelse.
+GENERATED_TYPE = "generated"
 MAX_OUTLINE_CHARS_PER_PART = 240_000     # ca 60 000 tokens
 MAX_FINDINGS = 20
 MAX_QUOTE_CHARS = 300                    # policyn ber om 150; viss marginal
@@ -169,7 +173,7 @@ def build_outline(structure: dict) -> list[dict]:
     """Brödtextens element i läsordning: {"id", "h"?, "t"}."""
     elements = [
         e for e in structure.get("elements", [])
-        if e.get("type") in OUTLINE_TYPES and (e.get("text") or "").strip()
+        if e.get("type") in OUTLINE_TYPES + (GENERATED_TYPE,) and (e.get("text") or "").strip()
     ]
     # Element utan doc_order (äldre strukturfiler) behåller sin ordning sist.
     elements.sort(key=lambda e: (e.get("doc_order") is None, e.get("doc_order") or 0))
@@ -376,12 +380,17 @@ class JBGGlobalAnalyzerAI:
             if isinstance(raw_ids, str):
                 raw_ids = [raw_ids]
             ids = []
+            mentions_generated = False
             for element_id in raw_ids:
                 element_id = str(element_id)
+                if elements.get(element_id, {}).get("type") == GENERATED_TYPE:
+                    mentions_generated = True   # platshållare kan aldrig ingå
+                    continue
                 if element_id in texts and element_id not in ids:
                     ids.append(element_id)
             if not ids:
-                result.rejected.append(RejectedFinding("unknown_element_ids", item))
+                reason = "generated_content" if mentions_generated else "unknown_element_ids"
+                result.rejected.append(RejectedFinding(reason, item))
                 continue
 
             quote = " ".join(str(item.get("quote") or "").split())[:MAX_QUOTE_CHARS]

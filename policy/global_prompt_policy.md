@@ -13,6 +13,8 @@ Du får dokumentet som en lista med element i läsordning, ett element per rad i
 - "h" finns bara för rubriker och anger rubriknivån (1 är högsta nivån).
 - "t" är elementets text.
 
+Automatiskt genererat innehåll, till exempel en innehållsförteckning, visas som en platshållare inom hakparentes, till exempel {"id": "generated_1", "t": "[Innehållsförteckning, skapas automatiskt]"}. Platshållaren kan aldrig ingå i en iakttagelse.
+
 Ibland får du bara en del av dokumentet. Granska då bara den delen.
 
 ## Utdata
@@ -166,6 +168,8 @@ Detta ska inte markeras:
 Bedöm bara stödet inom dokumentet. Formulera iakttagelsen som en fråga om underlaget, till exempel ”Överväg att visa vilket resultat slutsatsen bygger på” eller ”Formuleringen kan uppfattas som starkare än resultatet”, aldrig som ett påstående om att slutsatsen är fel. Ta med högst 5 iakttagelser.
 
 ## Omfattning
+
+- Kommentera inte automatiskt genererat innehåll, och inte heller rubriker vars avsnitt bara består av sådant innehåll, till exempel rubriken ovanför en innehållsförteckning.
 
 - Ta med högst 10 iakttagelser per kategori för upprepningar, inkonsekvenser och troliga fel, och börja med de viktigaste.
 - Hellre färre iakttagelser som är säkra än många som är osäkra.

@@ -17,6 +17,10 @@ except ModuleNotFoundError:
 
 MAX_TOKEN_PER_CALL = 8000
 
+# Elementtyper som aldrig granskas lokalt: platshållare för automatiskt
+# genererat innehåll (innehållsförteckningar m.m.), som Word skriver över.
+NON_REVIEWABLE_TYPES = {"generated"}
+
 
 # ============================================================================
 # Datamodeller
@@ -337,6 +341,17 @@ class JBGLangImprovSuggestorAI:
 
         if not self.json_structured_document:
             raise ValueError(f"Could not load JSON document from {filepath}")
+
+        # Den lokala granskningen ser bara element som ska granskas, och inte
+        # extraktorns lista över uteslutna id (den behövs inte av modellen).
+        document = self.json_structured_document
+        if isinstance(document, dict):
+            document.pop("excluded", None)
+            if isinstance(document.get("elements"), list):
+                document["elements"] = [
+                    e for e in document["elements"]
+                    if not (isinstance(e, dict) and e.get("type") in NON_REVIEWABLE_TYPES)
+                ]
 
     def save_as_json(self, output_path=None, use_validated=True):
         # Generera bara om granskningen aldrig har körts. Ett tomt resultat är

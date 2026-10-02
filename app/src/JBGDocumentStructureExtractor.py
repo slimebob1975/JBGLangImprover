@@ -11,8 +11,16 @@ from zipfile import ZipFile
 
 try:
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer
+    from app.src.JBGContentClassifier import (
+        GeneratedFieldTracker, HiddenTextResolver, generated_kind_for_sdt,
+        generated_kind_for_style, generated_label,
+    )
 except ModuleNotFoundError:
     from JBGAboutSectionRenderer import AboutSectionRenderer
+    from JBGContentClassifier import (
+        GeneratedFieldTracker, HiddenTextResolver, generated_kind_for_sdt,
+        generated_kind_for_style, generated_label,
+    )
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -63,6 +71,11 @@ class ExtractedElement:
     heading_level: Optional[int] = None
     doc_order: Optional[int] = None
 
+    # Bara för typen "generated": platshållare för automatiskt genererat
+    # innehåll (toc, figures, index, bibliography). Granskas aldrig lokalt,
+    # räknas inte i LIX och kan inte få kommentarer.
+    generated_kind: Optional[str] = None
+
 
 # ============================================================================
 # Extractor
@@ -105,11 +118,37 @@ class DocumentStructureExtractor:
         # påverkas inte när dess stycken hoppas över.
         excluded_paragraphs, excluded_tables = self._about_section_indices(doc)
 
+        # Helt dolda stycken och automatiskt genererat innehåll (förteckningar)
+        # granskas inte. Deras id används inte, så övriga id ändras inte.
+        self._hidden_resolver = HiddenTextResolver(self._styles_root(doc))
+        hidden_paragraphs, generated_paragraphs = self._classify_body_paragraphs(doc)
+        excluded_ids: dict[str, list[str]] = {"hidden": [], "generated": []}
+        generated_counter = 0
+        previous_generated: Optional[tuple[int, str]] = None   # (index, kind)
+
         # 1. Paragraphs in main document
         for i, para in enumerate(doc.paragraphs, start=1):
             if i in excluded_paragraphs:
                 continue
-            text = para.text or ""
+            if i in hidden_paragraphs:
+                excluded_ids["hidden"].append(f"paragraph_{i}")
+                continue
+            if i in generated_paragraphs:
+                kind = generated_paragraphs[i]
+                excluded_ids["generated"].append(f"paragraph_{i}")
+                # Sammanhängande stycken av samma slag blir en platshållare.
+                if previous_generated != (i - 1, kind):
+                    generated_counter += 1
+                    generated_id = f"generated_{generated_counter}"
+                    order_keys[generated_id] = (paragraph_blocks.get(i), 0, 0)
+                    elements.append(self._generated_element(
+                        generated_id, kind, f"/document/body/paragraph[{i}]"
+                    ))
+                previous_generated = (i, kind)
+                continue
+            # Samma textmodell som renderarna: text i väntande infogningar
+            # (w:ins) räknas med, text i väntande borttagningar (w:del) inte.
+            text = self._visible_text_from_xml_paragraph(para._element)
             style_id, style_name, heading_level = self._paragraph_style_info(para._element)
             order_keys[f"paragraph_{i}"] = (paragraph_blocks.get(i), 0, 0)
             elements.append(ExtractedElement(
@@ -139,7 +178,10 @@ class DocumentStructureExtractor:
                     # paragraph separately so the model can never return an
                     # anchor that crosses an OOXML paragraph boundary.
                     for pi, para in enumerate(cell.paragraphs, start=1):
-                        paragraph_text = para.text or ""
+                        if self._hidden_resolver.is_paragraph_fully_hidden(para._element):
+                            excluded_ids["hidden"].append(f"table_{ti}_cell_{ri}_{ci}_p{pi}")
+                            continue
+                        paragraph_text = self._visible_text_from_xml_paragraph(para._element)
                         cell_element_id = f"table_{ti}_cell_{ri}_{ci}_p{pi}"
                         style_id, style_name, heading_level = self._paragraph_style_info(para._element)
                         cell_sequence += 1
@@ -174,7 +216,7 @@ class DocumentStructureExtractor:
         # 4. Textboxes (main document)
         textbox_counter = 1
         for pi, para in enumerate(doc.paragraphs, start=1):
-            if pi in excluded_paragraphs:
+            if pi in excluded_paragraphs or pi in generated_paragraphs:
                 continue
             textboxes = self._extract_textboxes_from_paragraph(para)
             for tbx_local_index, box_info in enumerate(textboxes, start=1):
@@ -185,6 +227,9 @@ class DocumentStructureExtractor:
                     textbox_element_id = (
                         f"textbox_{textbox_counter}_p{textbox_paragraph_index}"
                     )
+                    if textbox_text is None:   # helt dolt stycke i textrutan
+                        excluded_ids["hidden"].append(textbox_element_id)
+                        continue
                     # Textrutor sorteras direkt efter sitt värdstycke.
                     order_keys[textbox_element_id] = (
                         paragraph_blocks.get(pi), 1,
@@ -227,10 +272,73 @@ class DocumentStructureExtractor:
                 may_contain_special_runs=True,
             ))
 
+        # Innehållskontroller i brödtexten med genererat innehåll (t.ex. en
+        # innehållsförteckning) blir platshållare på sin plats i läsordningen.
+        for position, child in enumerate(doc.element.body.iterchildren()):
+            if child.tag != f"{{{W_NS}}}sdt":
+                continue
+            kind = generated_kind_for_sdt(child)
+            if kind is None:
+                continue
+            generated_counter += 1
+            generated_id = f"generated_{generated_counter}"
+            order_keys[generated_id] = (position, 0, 0)
+            elements.append(self._generated_element(generated_id, kind, f"/document/body/sdt[{position}]"))
+
         self._assign_doc_order(elements, order_keys)
 
+        if excluded_ids["hidden"] or excluded_ids["generated"]:
+            self.logger.info(
+                f"Not reviewed: {len(excluded_ids['hidden'])} fully hidden paragraphs, "
+                f"{len(excluded_ids['generated'])} paragraphs of generated content "
+                f"({generated_counter} placeholders)"
+            )
+        structure["excluded"] = excluded_ids
         structure["elements"] = [asdict(e) for e in elements]
         return structure
+
+    # ------------------------------------------------------------------
+    # Dold text och genererat innehåll
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _styles_root(doc):
+        try:
+            return doc.styles.element
+        except Exception:
+            return None
+
+    def _classify_body_paragraphs(self, doc) -> tuple[set[int], dict[int, str]]:
+        """
+        (helt dolda stycken, {index: slag av genererat innehåll}) för
+        brödtextens stycken, med samma numrering som doc.paragraphs.
+        """
+        hidden: set[int] = set()
+        generated: dict[int, str] = {}
+        tracker = GeneratedFieldTracker()
+        for index, para in enumerate(doc.paragraphs, start=1):
+            element = para._element
+            kind = tracker.paragraph_kind(element)
+            if kind is None:
+                _, style_name, _ = self._paragraph_style_info(element)
+                kind = generated_kind_for_style(style_name)
+            if kind is not None:
+                generated[index] = kind
+            elif self._hidden_resolver.is_paragraph_fully_hidden(element):
+                hidden.add(index)
+        return hidden, generated
+
+    @staticmethod
+    def _generated_element(element_id: str, kind: str, container_path: str) -> "ExtractedElement":
+        return ExtractedElement(
+            type="generated",
+            element_id=element_id,
+            text=generated_label(kind),
+            empty=False,
+            part_name="word/document.xml",
+            container_path=container_path,
+            generated_kind=kind,
+        )
 
     # ------------------------------------------------------------------
     # Dokumentnivå: stilar, rubriknivåer och blockordning (G0.2)
@@ -549,8 +657,13 @@ class DocumentStructureExtractor:
         for drawing in drawing_elements:
             textbox_contents = drawing.findall(f".//{{{W_NS}}}txbxContent")
             paragraph_texts = []
+            resolver = getattr(self, "_hidden_resolver", None)
             for textbox_content in textbox_contents:
                 for textbox_paragraph in textbox_content.findall(f".//{{{W_NS}}}p"):
+                    # None markerar ett helt dolt stycke; numreringen behålls.
+                    if resolver is not None and resolver.is_paragraph_fully_hidden(textbox_paragraph):
+                        paragraph_texts.append(None)
+                        continue
                     paragraph_texts.append(
                         self._visible_text_from_xml_paragraph(textbox_paragraph)
                     )
@@ -558,7 +671,7 @@ class DocumentStructureExtractor:
             if paragraph_texts:
                 textboxes.append({
                     "xml": drawing,
-                    "text": "".join(paragraph_texts),
+                    "text": "".join(t for t in paragraph_texts if t),
                     "paragraph_texts": paragraph_texts,
                 })
 
