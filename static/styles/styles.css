@@ -100,12 +100,11 @@ button:hover {
 form {
     max-width: 500px;
     margin: 0 auto;
-    padding: 10px 15px;
-    /* background-color: #fdfdfd; */ /* Tidigare */
-    background-color: #ffffff;
-    border-radius: 8px;
-    /* box-shadow: 0 0 8px rgba(0,0,0,0.1); */ /* Tidigare */
-    box-shadow: 0 1px 6px rgba(0,0,0,0.05);
+    padding: 0;
+    /* Tidigare ett eget vitt kort med skugga; nu bär panelerna strukturen */
+    background-color: transparent;
+    border-radius: 0;
+    box-shadow: none;
     font-family: "Open Sans", Arial, sans-serif;
 }
 
@@ -116,14 +115,49 @@ form label {
     margin-bottom: 4px;
 }
 
-/* Avsnittsrubriker i formuläret (ersätter <strong> + <br>-avstånd) */
-form label.form-section {
-    font-weight: bold;
-    margin-top: 14px;
+/* === Inloggad användare, under underrubriken === */
+.user-display {
+    margin: -0.5rem 0 0.75rem 0;
+    font-size: 0.85rem;
+    font-style: italic;
+    color: #555;
 }
 
-form label.form-section:first-child {
-    margin-top: 0;
+.user-display[hidden] {
+    display: none;
+}
+
+/* === Paneler (fieldset + legend), en per del av formuläret ===
+   Samma utseende som i tjänstens systerapp: ljusgrå bakgrund, tunn ram och
+   rundade hörn. Kontrollerna i panelen har vit bakgrund för kontrast. */
+.settings-panel {
+    margin: 0 0 0.75rem 0;
+    padding: 0.35rem 0.9rem 0.6rem 0.9rem;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background-color: #fafafa;
+    /* fieldset har annars min-width: min-content och kan bli bredare än formuläret */
+    min-width: 0;
+}
+
+.settings-panel > legend {
+    padding: 0 0.35rem;
+    font-weight: bold;
+    color: #333;
+}
+
+/* Första fältet direkt under panelens rubrik behöver ingen extra luft */
+.settings-panel > legend + label,
+.settings-panel > legend + input,
+.settings-panel > legend + .form-check,
+.settings-panel > legend + div {
+    margin-top: 0.25rem;
+}
+
+.settings-panel input:not([type="checkbox"]):not([type="radio"]),
+.settings-panel select,
+.settings-panel textarea {
+    background-color: #fff;
 }
 
 form input,

@@ -5,6 +5,21 @@ fetch("/config")
     document.getElementById("app-title").innerText = data.title;
   });
 
+// Visa inloggad användare (Azure App Service-inloggning). Utan inloggning,
+// t.ex. vid lokal körning, visas "okänd användare" som i systertjänsten.
+// Om anropet misslyckas förblir raden dold, så att ett fel syns som en
+// saknad rad och inte som en okänd användare.
+fetch("/me")
+  .then(res => (res.ok ? res.json() : null))
+  .then(data => {
+    const label = document.getElementById("userDisplay");
+    if (data && label) {
+      label.textContent = `Inloggad som: ${data.user || "okänd användare"}`;
+      label.hidden = false;
+    }
+  })
+  .catch(err => console.warn("Kunde inte hämta användarinformation:", err));
+
 // Load saved API key from localStorage on page load
 document.addEventListener("DOMContentLoaded", () => {
     const savedKey = localStorage.getItem("openai_api_key");

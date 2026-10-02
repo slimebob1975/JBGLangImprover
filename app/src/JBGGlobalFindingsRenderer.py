@@ -38,6 +38,7 @@ RELATED_LABELS = {
     "error": "Se även",
     "disposition": "Se även",
     "heading": "Se även",
+    "conclusion": "Jämför med",
 }
 _TEXTBOX_HOST_RE = re.compile(r"^/document/body/paragraph\[(\d+)\]/textbox")
 

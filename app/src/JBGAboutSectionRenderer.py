@@ -56,6 +56,7 @@ GLOBAL_CATEGORY_NAMES_PLURAL = {
     "error": "troliga fel",
     "disposition": "förslag om disposition",
     "heading": "förslag om rubriker",
+    "conclusion": "slutsatser som behöver stöd",
 }
 
 SWEDISH_MONTHS = (

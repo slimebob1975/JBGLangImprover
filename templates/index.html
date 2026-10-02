@@ -12,15 +12,23 @@
     <div id="wrapper">
         <h1 name="app-title" id="app-title">JBG klarspråkning</h1>
         <h3><em>För .docx-filer</em></h3>
+        <!-- Fylls i av script.js; dold bara om anropet till /me misslyckas -->
+        <p id="userDisplay" class="user-display" hidden></p>
         <form id="uploadForm">
-            <label for="documentFile" class="form-section" title="Endast .docx-filer accepteras">Ladda upp din text:</label>
-            <input type="file" id="documentFile" name="file" accept=".docx" required>
+            <!-- Panel 1: Ladda upp din text -->
+            <fieldset class="settings-panel">
+                <legend id="uploadLegend">Ladda upp din text</legend>
+                <input type="file" id="documentFile" name="file" accept=".docx" required
+                       title="Endast Word-filer (.docx). Originalfilen ändras inte: du får tillbaka en ny fil med förslagen." aria-labelledby="uploadLegend">
+            </fieldset>
 
-            <label class="form-section">Inställningar för språkmodellen</label>
+            <!-- Panel 2: Inställningar för språkmodellen -->
+            <fieldset class="settings-panel">
+                <legend>Inställningar för språkmodellen</legend>
             <label for="apiKey" title="API-nyckeln är en form av lösenord som du får av lokalsamordnaren">Skriv in din OpenAI API-nyckel:</label>
             <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required>
 
-            <label for="model" title="Nyare modeller är bättre men dyrare att använda">Välj språkmodell för granskningen:</label>
+            <label for="model" title="Modellen används både för förslagen i texten och för granskningen av dokumentet som helhet. Nyare modeller är bättre men dyrare att använda.">Välj språkmodell för granskningen:</label>
             <select id="model" name="model">
                 <option value="gpt-5.6-terra" >gpt-5.6-terra</option>
                 <option value="gpt-5.6-luna" >gpt-5.6-luna</option>
@@ -32,16 +40,18 @@
                 <option value="gpt-4o">gpt-4o</option>
             </select>
 
-            <label for="editablePrompt" title="Instruktionen gäller förslagen inom enskilda stycken, tabellceller, fotnoter, sidhuvuden och sidfötter. Om du vill ge särskilda instruktioner till språkmodellen kan du ändra standardtexten.">Anpassa den lokala promptinstruktionen:</label>
+            <label for="editablePrompt" title="Instruktionen styr förslagen inom enskilda stycken, tabellceller, textrutor, fotnoter, sidhuvuden och sidfötter. Den påverkar inte granskningen av dokumentet som helhet. Ändra standardtexten om du vill ge särskilda instruktioner.">Anpassa den lokala promptinstruktionen:</label>
             <textarea id="editablePrompt" name="editablePrompt" rows="6" placeholder="Laddar policy..." required></textarea>
+            </fieldset>
 
-            <!-- Globala inställningar (dokumentnivå) -->
-            <label class="form-section">Globala inställningar</label>
-            <div class="form-check" title="Språkmodellen läser dokumentet som helhet och markerar iakttagelser med kommentarer i Word. I den här versionen: onödiga upprepningar, påståenden som säger emot varandra, troliga fel som kvarlämnad arbetstext samt förslag om avsnittens ordning och om rubriker som inte stämmer med innehållet. Fler kontroller, till exempel slutsatser utan stöd i texten, kommer senare. Tar längre tid och kostar fler tokens.">
+            <!-- Panel 3: Dokumentinställningar (granskning på dokumentnivå) -->
+            <fieldset class="settings-panel">
+                <legend>Dokumentinställningar</legend>
+            <div class="form-check" title="Språkmodellen läser dokumentet som helhet och lägger till kommentarer i Word om onödiga upprepningar, påståenden som säger emot varandra, troliga fel som kvarlämnad arbetstext, slutsatser som behöver stöd i resultaten samt förslag om avsnittens ordning och om rubriker. Texten ändras inte. Tar längre tid och kostar fler tokens.">
                 <input type="checkbox" id="globalReview" name="globalReview">
                 <label for="globalReview">Granska dokumentets struktur och upplägg</label>
             </div>
-            <div class="form-check" title="LIX (läsbarhetsindex) bygger på meningarnas längd och andelen långa ord. Värdena visas i avsnittet Om klarspråkningen, eller som en kommentar vid dokumentets titel om avsnittet inte läggs till.">
+            <div class="form-check" title="LIX (läsbarhetsindex) bygger på meningarnas längd och andelen långa ord. Värdet efter granskningen förutsätter att alla förslag godtas. Värdena visas i avsnittet Om klarspråkningen, eller som en kommentar vid dokumentets titel om avsnittet inte läggs till.">
                 <input type="checkbox" id="computeLix" name="computeLix">
                 <label for="computeLix">Beräkna LIX-värde före och efter granskning</label>
             </div>
@@ -54,29 +64,37 @@
                     <span id="tempDisplay">0.7</span>
                 </div>
             </div>
-            <label class="form-section">Hur ska resultatet se ut?</label>
+            </fieldset>
+
+            <!-- Panel 4: Hur ska resultatet se ut? -->
+            <fieldset class="settings-panel">
+                <legend>Hur ska resultatet se ut?</legend>
             <!-- DOCX Markup Mode -->
             <div id="doxcModeRadioButtons" role="radiogroup" aria-labelledby="docxModeLabel">
                 <label id="docxModeLabel">Visa förslag till förändringarna med:</label>
-                <div class="form-check" title="Gammal text stryks och rödmarkeras, ny text grönmarkeras">
+                <div class="form-check" title="Text som föreslås bli borttagen visas överstruken i rött och ny text i grönt. Förslagen motiveras inte med kommentarer.">
                     <input type="radio" id="simpleMarking" name="docxMode" value="simple" checked>
                     <label for="simpleMarking">Enkel färgmarkering</label>
                 </div>
-                <div class="form-check" title="Använd Word-inställningen 'Spåra ändringar'">
+                <div class="form-check" title="Förslagen läggs in som spårade ändringar i Word, med en kommentar som motiverar varje förslag. Du godtar eller avvisar dem ett i taget eller alla på en gång.">
                     <input type="radio" id="trackedChanges" name="docxMode" value="tracked">
                     <label for="trackedChanges">Spåra ändringar och infogade kommentarer</label>
                 </div>
             </div>
-            <!-- Övrigt -->
-            <label class="form-section">Övrigt</label>
-            <div class="form-check" title="Avsnittet beskriver granskningen: språkmodell, antal tokens, antal förslag och läsbarhet (LIX) före och efter. Med Spåra ändringar infogas det som en spårad ändring som du kan avvisa i ett steg.">
+            </fieldset>
+
+            <!-- Panel 5: Övrigt -->
+            <fieldset class="settings-panel">
+                <legend>Övrigt</legend>
+            <div class="form-check" title="Ett avsnitt sist i dokumentet med uppgifter om granskningen: språkmodell, anrop och tokens, antal förslag och iakttagelser samt läsbarhet (LIX) om den beräknas. Med Spåra ändringar infogas det som en spårad ändring som du kan avvisa i ett steg.">
                 <input type="checkbox" id="includeAboutSection" name="includeAboutSection">
                 <label for="includeAboutSection">Lägg till ”Om klarspråkningen” sist</label>
             </div>
              <div class="form-inline" style="display: none;">
-                <label for="includeMotivations" title="Språkmodellen genererar motiveringar till förändringsförslagen, och dessa läggs som kommentarer i dokumentet">Lägg till kommentarer till förslagen ("Spåra ändringar"):</label>
+                <label for="includeMotivations" title="Språkmodellen motiverar förändringsförslagen, och motiveringarna läggs som kommentarer i dokumentet. Gäller bara Spåra ändringar.">Lägg till kommentarer till förslagen ("Spåra ändringar"):</label>
                 <input type="checkbox" id="includeMotivations" name="includeMotivations" checked>
             </div>
+            </fieldset>
 
             <!-- The start button!!! -->
             <button id="button" name="button" type="submit" title="Börja din språkgranskning!">Starta</button>

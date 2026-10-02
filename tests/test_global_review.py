@@ -110,7 +110,7 @@ class OutlineTests(unittest.TestCase):
         self.assertIn("numreringen inte syns i texten", policy)
         # Troliga fel: ett ställe räcker, stavfel hör till den lokala granskningen
         self.assertIn("### error", policy)
-        self.assertIn('Kategorierna "error", "disposition" och "heading" kan ha ett enda id', policy)
+        self.assertIn('Kategorierna "error", "disposition", "heading" och "conclusion" kan ha ett enda id', policy)
         # Disposition och rubriker: respektfull ton, skyddade standardavsnitt,
         # övergångar bara som stöd, gräns mot granskningen av belägg
         self.assertIn("### disposition", policy)
@@ -119,6 +119,14 @@ class OutlineTests(unittest.TestCase):
         self.assertIn("ska behålla sina rubriker och sin plats", policy)
         self.assertIn("aldrig som en egen iakttagelse", policy)
         self.assertIn("Bedöm inte om ett påstående i rubriken är belagt", policy)
+        # Slutsatser: gräns mot inkonsekvens, bara stöd inom dokumentet, ton.
+        # Avsnittet står efter "Gemensamt för disposition och rubriker", så att
+        # regeln "quote är rubrikens text" inte kan läsas som att den gäller här.
+        self.assertIn("### conclusion", policy)
+        self.assertIn("Om slutsatsen går längre än resultatet hör den hit", policy)
+        self.assertIn("Bedöm bara stödet inom dokumentet", policy)
+        self.assertIn("aldrig som ett påstående om att slutsatsen är fel", policy)
+        self.assertLess(policy.index("### Gemensamt för disposition och rubriker"), policy.index("### conclusion"))
         self.assertIn('"proposed_order"', policy)
         self.assertIn("hanteras i den lokala granskningen", policy)
 
@@ -380,6 +388,52 @@ class ParseAndValidateTests(unittest.TestCase):
         self.assertEqual(len(result.findings), 5)
         self.assertEqual([r.reason for r in result.rejected], ["over_limit", "over_limit"])
 
+    # ---------------- Slutsatser som behöver stöd ----------------
+
+    def conclusion(self, **overrides):
+        # Testkörningen 7c5dfd4d: slutsatsen säger "fel", resultatet gäller bekräftade fel
+        item = {
+            "category": "conclusion",
+            "element_ids": ["paragraph_9", "paragraph_8"],
+            "quote": "ledde 3,1 procent av tidrapporterna till återkrav",
+            "related_quote": "var 2,2 procent under 2021–2023",
+            "description": "Formuleringen kan uppfattas som starkare än resultatet.",
+            "proposal": "Överväg att ange vilket resultat slutsatsen bygger på.",
+        }
+        item.update(overrides)
+        return item
+
+    def test_conclusion_is_accepted_with_verified_support(self):
+        result = self.validate(self.conclusion())
+        self.assertEqual(len(result.findings), 1, [r.reason for r in result.rejected])
+        finding = result.findings[0]
+        self.assertEqual(finding.label, "Slutsats som behöver stöd")
+        self.assertEqual(finding.element_ids, ["paragraph_9", "paragraph_8"])
+        self.assertEqual(finding.related_quote, "var 2,2 procent under 2021–2023")
+
+    def test_conclusion_without_any_support_needs_only_one_place(self):
+        result = self.validate(self.conclusion(element_ids=["paragraph_9"], related_quote=""))
+        self.assertEqual(len(result.findings), 1, [r.reason for r in result.rejected])
+
+    def test_conclusion_with_an_unverifiable_support_quote_keeps_the_finding(self):
+        # Underlaget är frivilligt: ett citat som inte finns tas bort, iakttagelsen behålls
+        result = self.validate(self.conclusion(related_quote="Det här står inte i texten."))
+        self.assertEqual(len(result.findings), 1)
+        self.assertEqual(result.findings[0].related_quote, "")
+
+    def test_conclusion_may_sit_on_a_message_heading(self):
+        result = self.validate(self.conclusion(element_ids=["paragraph_5"], quote="Resultat", related_quote=""))
+        self.assertEqual(len(result.findings), 1, [r.reason for r in result.rejected])
+
+    def test_conclusions_are_limited_to_five(self):
+        others = ["paragraph_2", "paragraph_4", "paragraph_6", "paragraph_8",
+                  "table_1_cell_1_1_p1", "textbox_2_p1", "paragraph_1"]
+        items = [self.conclusion(element_ids=["paragraph_9", other], related_quote="",
+                                 description=f"Iakttagelse {i}.") for i, other in enumerate(others)]
+        result = self.validate(*items)
+        self.assertEqual(len(result.findings), 5)
+        self.assertEqual([r.reason for r in result.rejected], ["over_limit", "over_limit"])
+
     def test_same_places_in_two_categories_are_not_duplicates(self):
         result = self.validate(
             self.repetition(element_ids=["paragraph_9", "paragraph_8"],
@@ -533,6 +587,20 @@ class GlobalCommentRenderingTests(unittest.TestCase):
         heading = _body(output).findall(f"{W}p")[2]
         self.assertEqual("".join(t.text or "" for t in heading.iter(f"{W}t")), "Resultat")
         self.assertIsNotNone(heading.find(f"{W}commentRangeStart"))
+
+    def test_conclusion_comment_quotes_the_underlying_result(self):
+        output, results = self.render([self.finding(
+            ["paragraph_4", "paragraph_2"], category="conclusion",
+            description="Formuleringen kan uppfattas som starkare än resultatet.",
+            proposal="Överväg att visa vilket resultat slutsatsen bygger på.",
+            related_quote="alla a-kassor under 2024",
+        )])
+        self.assertTrue(results[0].applied, results[0].message)
+        self.assertEqual(_comments(output)[str(results[0].comment_id)], [
+            "Slutsats som behöver stöd. Formuleringen kan uppfattas som starkare än resultatet.",
+            "Förslag: Överväg att visa vilket resultat slutsatsen bygger på.",
+            "Jämför med: avsnittet ”Inledning” (”alla a-kassor under 2024”).",
+        ])
 
     def test_table_cell_and_textbox_anchors(self):
         textbox_id = next(e["element_id"] for e in self.structure["elements"] if e["type"] == "textbox")

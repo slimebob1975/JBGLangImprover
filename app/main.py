@@ -5,6 +5,7 @@ from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 import os, sys
+from urllib.parse import unquote_plus
 import shutil
 import logging
 from datetime import datetime
@@ -154,6 +155,24 @@ def get_config():
     title = os.getenv("APP_TITLE", "JBG Klarspråkning")
     print(f" Appens titel: {title}")
     return {"title": title}
+
+# Maximal längd på visat användarnamn (skydd mot orimliga rubrikvärden)
+MAX_USER_DISPLAY_CHARS = 200
+
+@app.get("/me")
+def get_current_user(request: Request):
+    """
+    Namnet på den inloggade användaren, för raden "Inloggad som: …" i
+    gränssnittet. Azure App Service-inloggningen lägger till rubriken
+    X-MS-CLIENT-PRINCIPAL-NAME (URL-kodad) i varje anrop.
+
+    Bara för visning: namnet används aldrig för behörighet, eftersom rubriken
+    kan sättas av klienten om tjänsten nås utan Azures inloggning framför.
+    Returnerar {"user": None} när ingen användare är känd, t.ex. lokalt.
+    """
+    raw_user = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME", "")
+    user = unquote_plus(raw_user).strip()[:MAX_USER_DISPLAY_CHARS]
+    return {"user": user or None}
 
 @app.get("/get_editable_prompt/")
 def get_editable_prompt():

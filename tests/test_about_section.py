@@ -290,10 +290,11 @@ class AboutSectionContentTests(unittest.TestCase):
     def test_global_findings_table(self):
         summary = json.loads(json.dumps(REAL_RUN_SUMMARY))
         summary["global_review"] = True
-        summary["global_findings"] = {"accepted": 3, "by_category": {"repetition": 2, "heading": 1}}
+        summary["global_findings"] = {"accepted": 4, "by_category": {"repetition": 2, "heading": 1, "conclusion": 1}}
         blocks = build_about_section_blocks(summary, tracked=True)
         self.assertEqual(self.table_after(blocks, "Iakttagelser från den globala granskningen"), [
-            ["Kategori", "Antal"], ["Upprepningar", "2"], ["Förslag om rubriker", "1"], ["Totalt", "3"],
+            ["Kategori", "Antal"], ["Upprepningar", "2"], ["Förslag om rubriker", "1"],
+            ["Slutsatser som behöver stöd", "1"], ["Totalt", "4"],
         ])
         self.assertIn("Iakttagelserna finns som kommentarer i dokumentet.", [b.text for b in blocks])
 

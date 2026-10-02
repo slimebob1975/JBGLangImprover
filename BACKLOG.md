@@ -8,13 +8,15 @@
 - [ ] `TrackedChangesRenderer` starts revision ids at 1 regardless of existing revisions in the document, so ids can collide with tracked changes already in the source
 - [ ] Simple markup fails on some long rewrites in paragraphs with manual line breaks ("Invalid last_local_end" in `JBGSimpleMarkupRenderer`; test run b02ce006, paragraph_53 and paragraph_115). Tracked changes already handles anchors at line breaks; port the same fix and add a regression test
 - [ ] Global findings vary considerably between runs of the same document (e.g. a within-section repetition found in two runs and missing in the third); consider a lower temperature for the global call where the model allows it
-- [ ] Check whether template notes such as "Ta ej bort denna avsnittsbrytning!!" (test run b391e3ac, paragraph_127, flagged as "Troligt fel") are hidden or white text in the template. If so, the extractor should skip hidden text (`w:vanish`) so it is neither reviewed nor counted in LIX
+- [ ] Hidden text is extracted as if it were visible. Confirmed: the template note "Ta ej bort denna avsnittsbrytning!!" (test runs b391e3ac and 905c7230, paragraph_127) is hidden template text and was flagged as "Troligt fel" in both runs. Fix in the extractor: leave out paragraphs whose text is entirely hidden, so they are not reviewed, not counted in LIX and cannot carry a comment. Hidden means `w:vanish` (or `w:specVanish`) on the run, from the run's character style, or from the paragraph style. Element ids of other paragraphs must not change (skip the paragraph, keep the numbering). Partly hidden paragraphs are kept as they are, since removing hidden words would shift the anchors of local proposals. Natural to do together with the content-control item and G3.f, which also change the extractor
+- [ ] The extractor does not read content inside body-level content controls (`w:sdt`), because it only reads paragraphs and tables directly in the body. Text there is neither reviewed locally nor globally, and the global review sees an empty section. Test run 905c7230: the heading "Innehåll" got "Förslag om rubrik" because its automatically generated table of contents (a content control) was invisible. Check which templates put real text (cover fields, standard text) in content controls
 - [ ] Fixed 5 s pause between API calls (about 50 s of a 5.5 min run with 11 calls); replace with retry/backoff on rate-limit errors
 
 ## Planned improvments
 
 ### GUI
 
+- [x] Show "Inloggad som: …" at the top of the page, like the sister service: `/me` returns the name from Azure App Service authentication (header `X-MS-CLIENT-PRINCIPAL-NAME`, URL-decoded, max 200 characters) and `script.js` shows it under the subtitle. Without a login (e.g. locally) the line reads "Inloggad som: okänd användare", like the sister service; if the call fails, the line stays hidden. Display only: the name is never used for authorization
 - [ ] Roll back the unlocking of the form after a run: keep all controls locked when a run finishes or fails, so a new run requires reloading the page (consistent with the footer hint about Ctrl-Shift-R). Remove the `unlockUI()` calls in `script.js` (submit error, status error, download `finally`); `lockUI()` can keep its `lockedByUI` bookkeeping or return to the original version
 
 ### EPIC: Global (document-level) language improvement layer
@@ -53,6 +55,8 @@ the global step fails, the run still delivers the locally improved document.
   - Moved to "Globala inställningar" under the structure checkbox, unchecked by default. "Lägg till ”Om klarspråkningen” sist" is also unchecked by default (GUI and `main.py` defaults)
   - Without the section, LIX is added as a comment on the document title: the first paragraph in the Title style, otherwise the first body paragraph with text (fact boxes and text boxes are skipped)
 - [x] G2.6 GUI layout: compact vertical spacing, left-aligned radio buttons and checkboxes, section headings "Globala inställningar" and "Övrigt", prompt label "Anpassa den lokala promptinstruktionen"
+  - The form is split into five grey panels (`fieldset` + `legend`, class `settings-panel`, same look as the sister service): "Ladda upp din text", "Inställningar för språkmodellen", "Dokumentinställningar" (renamed from "Globala inställningar"), "Hur ska resultatet se ut?" and "Övrigt". The form's own white card is removed
+  - Tooltips reviewed against the service: file (new file, original unchanged), model (used for both reviews), local prompt (includes text boxes, does not affect the document review), structure review (no "kommer senare", text is never changed), LIX ("after" assumes all proposals accepted), simple markup (struck through in red, no comments), tracked changes (with motivating comments), "Om klarspråkningen" (global findings, LIX only if computed)
 
 #### Phase 3 - Global analyzer (LLM)
 
@@ -82,7 +86,11 @@ Finding categories, to be implemented in this order:
   - A broken transition before a heading is only used as support for a disposition finding, never as a finding of its own
   - Disposition findings must sit on a body section heading (`anchor_not_a_section_heading`), and `proposed_order` may only name such headings. Test run b391e3ac proposed moving the template fact box "IAF:s tillsyn" (a table before the Förord); headings in fact boxes, tables and text boxes are not sections. Heading suggestions may still sit on fact-box headings
   - Whether a claim in a message heading is supported by the text belongs to G3.d
-- [ ] G3.d Erroneous, irrelevant or unsupported (baseless) conclusions, with a reference to what is missing in the text
+- [x] G3.d Erroneous, irrelevant or unsupported (baseless) conclusions, with a reference to what is missing in the text
+  - Category `conclusion`, comment label "Slutsats som behöver stöd. …": conclusions that claim more than the results show (sample to all, cause from co-variation, "visar" vs "tyder på"), conclusions without any result behind them, and conclusions that do not answer the stated purpose. A conclusion that contradicts a result stays an inconsistency
+  - Comment on the conclusion itself (paragraph, fact box or message heading; one place is enough). The supporting result may be cited in `related_quote`, verified like other quotes ("Jämför med: …"); an unverifiable quote is dropped, not the finding
+  - Only support within the document is judged; conclusions backed by a cited source, explicit assessments with stated reasoning, and recommendations are excluded. Respectful wording, at most 5 findings (`MAX_PER_CATEGORY`)
+- [ ] G3.f Do not comment on automatically generated content. Recognize it in the extractor (a table of contents, list of figures or tables, index or bibliography: content controls of the "Table of Contents"/"Bibliography" gallery types, or `TOC`, `INDEX` and `BIBLIOGRAPHY` fields) and show it to the global review as a marked placeholder, e.g. `{"id": "toc_1", "t": "[Innehållsförteckning, skapas automatiskt]"}`, so the heading above it is not seen as empty. The placeholder is never reviewed, never counted in LIX and cannot be a comment anchor (validation rejects it); the policy states that automatically generated content and headings for it are not to be commented on. Depends on the content-control item under Known issues
 - [ ] G3.e Further checks (e.g. missing summary, undefined abbreviations at first use, promised content that never appears)
 
 #### Phase 4 - Rendering of global findings

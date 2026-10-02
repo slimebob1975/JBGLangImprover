@@ -34,7 +34,7 @@ Svara endast med ett JSON-objekt, utan markdown och utan annan text:
 Krav på varje iakttagelse:
 
 - "category" är en av kategorierna som beskrivs nedan.
-- "element_ids" innehåller bara id som finns i indata. Det första id:t är elementet där läsaren bör göra något, till exempel stryka eller korta en upprepning. Övriga id är de ställen som iakttagelsen hänger ihop med. Kategorierna "error", "disposition" och "heading" kan ha ett enda id.
+- "element_ids" innehåller bara id som finns i indata. Det första id:t är elementet där läsaren bör göra något, till exempel stryka eller korta en upprepning. Övriga id är de ställen som iakttagelsen hänger ihop med. Kategorierna "error", "disposition", "heading" och "conclusion" kan ha ett enda id.
 - "quote" är ett sammanhängande, ordagrant utdrag på högst 150 tecken ur texten i det första elementet. Använd inga utelämningstecken (... eller …) i citatet.
 - "related_quote" är på samma sätt ett ordagrant utdrag ur texten i det andra elementet. Det krävs för kategorin "inconsistency" och är frivilligt för övriga kategorier.
 - "proposed_order" används bara i kategorin "disposition" och är frivilligt. Det är en lista med rubrikernas exakta text i den ordning du föreslår.
@@ -135,7 +135,7 @@ Bedöm om rubriken beskriver det som faktiskt står i avsnittet under den. Marke
 
 Lägg rubriken först i "element_ids". Ge gärna ett exempel på en ny rubrik i "proposal" och skriv tydligt att det är ett förslag.
 
-Bedöm inte om ett påstående i rubriken är belagt i texten, eftersom det hör till en annan granskning. Bedöm inte heller rubrikens språk, eftersom det hanteras i den lokala granskningen.
+Bedöm inte om ett påstående i rubriken är belagt i texten; det hör till kategorin "conclusion". Bedöm inte heller rubrikens språk, eftersom det hanteras i den lokala granskningen.
 
 ### Gemensamt för disposition och rubriker
 
@@ -143,6 +143,27 @@ Bedöm inte om ett påstående i rubriken är belagt i texten, eftersom det hör
 - Standardavsnitt som följer av dokumentets mall eller genre, till exempel förord, sammanfattning, inledning, källor och bilagor, ska behålla sina rubriker och sin plats.
 - "quote" är rubrikens text.
 - Ta med högst 5 iakttagelser per kategori, och bara där läsaren tydligt skulle vinna på en ändring.
+
+### conclusion – slutsats som behöver stöd
+
+Bedöm om dokumentets slutsatser och bedömningar vilar på det som dokumentet självt redovisar. Markera till exempel när en slutsats:
+
+- påstår mer än resultaten visar, till exempel generaliserar från ett urval till alla, drar en orsaksslutsats av ett samband, eller säger "visar" där underlaget bara räcker till "tyder på"
+- saknar stöd i något av de resultat som redovisas i dokumentet
+- inte svarar mot granskningens syfte eller frågor, så att det är oklart varför den dras
+
+Om en slutsats säger emot ett resultat är det en inkonsekvens; använd då kategorin "inconsistency". Om slutsatsen går längre än resultatet hör den hit.
+
+Lägg slutsatsen först i "element_ids". Det kan vara ett stycke, en faktaruta eller en rubrik som uttrycker ett budskap. Ange gärna de ställen där det underlag finns som slutsatsen bygger på, och citera då det underlaget i "related_quote".
+
+Detta ska inte markeras:
+
+- slutsatser som stöds av en källa som dokumentet hänvisar till, till exempel en lag, en dom eller en tidigare rapport
+- bedömningar som tydligt anges som skribentens eller myndighetens egna och där resonemanget redovisas
+- rekommendationer och förslag om vad någon bör göra
+- frågor om faktauppgifter som bara går att kontrollera mot källor utanför dokumentet
+
+Bedöm bara stödet inom dokumentet. Formulera iakttagelsen som en fråga om underlaget, till exempel ”Överväg att visa vilket resultat slutsatsen bygger på” eller ”Formuleringen kan uppfattas som starkare än resultatet”, aldrig som ett påstående om att slutsatsen är fel. Ta med högst 5 iakttagelser.
 
 ## Omfattning
 

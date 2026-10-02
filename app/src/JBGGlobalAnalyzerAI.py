@@ -37,6 +37,7 @@ GLOBAL_CATEGORIES = {
     "error": "Troligt fel",
     "disposition": "Förslag om disposition",
     "heading": "Förslag om rubrik",
+    "conclusion": "Slutsats som behöver stöd",
 }
 
 # Kategorier vars kommentar alltid sitter på en rubrik.
@@ -50,6 +51,7 @@ MAX_PER_CATEGORY = {
     "error": 10,
     "disposition": 5,
     "heading": 5,
+    "conclusion": 5,
 }
 
 # Minsta antal ställen per kategori. Upprepningar och motsägelser kräver
@@ -60,6 +62,7 @@ MIN_LOCATIONS = {
     "error": 1,
     "disposition": 1,
     "heading": 1,
+    "conclusion": 1,
 }
 
 # Kategorier där det motstridiga stället måste citeras och kontrolleras.
