@@ -116,6 +116,8 @@ Indata:
 Den text du får är i JSON-format och visar strukturen för Word-dokumentet du ska granska med:
 
 - text, och element_id, "type" av text, exempelvis paragraph, header, footer, footnote, table cell, etc.
+- footnote_id för fotnoter. Det ska följa med oförändrat i svaret.
+- heading_level för rubriker, där 1 är den högsta nivån. Reglerna för rubriker gäller dessa element.
 - Det är bara texten du ska granska och föreslå ändringar till oavsett vilken typ av text det är.
 
 Utdata:

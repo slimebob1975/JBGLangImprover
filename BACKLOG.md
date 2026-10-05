@@ -12,6 +12,7 @@
 
 ### GUI
 
+- [ ] Make "Spåra ändringar och infogade kommentarer" the default result mode, and in the long run possibly the only one. The GUI could then be simplified from the two radio buttons to two checkboxes: "Spåra ändringar" and "Infogade kommentarer" (the latter maps to the existing `include_motivations` option, today hidden and always on). Before removing simple markup: check whether anyone depends on it, and decide what the comments checkbox means without tracked changes (simple markup has no comments today)
 - [x] Show "Inloggad som: …" at the top of the page, like the sister service: `/me` returns the name from Azure App Service authentication (header `X-MS-CLIENT-PRINCIPAL-NAME`, URL-decoded, max 200 characters) and `script.js` shows it under the subtitle. Without a login (e.g. locally) the line reads "Inloggad som: okänd användare", like the sister service; if the call fails, the line stays hidden. Display only: the name is never used for authorization
 
 ### EPIC: Global (document-level) language improvement layer
@@ -34,7 +35,7 @@ the global step fails, the run still delivers the locally improved document.
 - [x] G1.2 Compute LIX "before" from the structure JSON only, and LIX "after" from structure JSON + accepted suggestions JSON by applying the anchored `old` -> `new` spans in memory (reuse `ChangePlanner` anchors, skip overlapping conflicts)
 - [x] G1.3 Decide and document the text scope: body paragraphs, table cells and textboxes by default; headings, headers/footers and footnotes reported separately or excluded
   - Decision: headings, headers/footers and footnotes are excluded; "after" assumes all accepted suggestions are applied
-- [ ] G1.6 Reduce prompt tokens: send only the fields the model needs (`element_id`, `type`, `text`, `heading_level`, `footnote_id`) instead of the full element dict
+- [x] G1.6 Reduce prompt tokens: the local review sends only `type`, `element_id` and `text`, plus `footnote_id` for footnotes and `heading_level` for headings (both described in the policy's locked input section); empty elements are not sent, and a part with only empty elements makes no call. The split into calls is unchanged (still measured on the full element data), so each call contains the same text as before. Measured on test run de5618be: document payload 176,603 -> 45,799 characters (-74%), whole local prompt -60%, estimated about 62,000 -> 25,000 prompt tokens per run. Fewer, larger calls could be tried later as a separate experiment
 - [x] G1.4 Report LIX for the whole document and per top-level section (depends on G0.2), with the usual interpretation bands (very easy ... very difficult)
 - [x] G1.5 Unit tests with hand-calculated Swedish reference texts
 
@@ -53,6 +54,7 @@ the global step fails, the run still delivers the locally improved document.
   - The form is split into five grey panels (`fieldset` + `legend`, class `settings-panel`, same look as the sister service): "Ladda upp din text", "Inställningar för språkmodellen", "Dokumentinställningar" (renamed from "Globala inställningar"), "Hur ska resultatet se ut?" and "Övrigt". The form's own white card is removed
   - Tooltips reviewed against the service: file (new file, original unchanged), model (used for both reviews), local prompt (includes text boxes, does not affect the document review), structure review (no "kommer senare", text is never changed), LIX ("after" assumes all proposals accepted), simple markup (struck through in red, no comments), tracked changes (with motivating comments), "Om klarspråkningen" (global findings, LIX only if computed)
   - The title, subtitle and "Inloggad som" line are aligned with the left edge of the panels (same width and centering as the form) at any screen width, with the same vertical spacing between them as the sister service (about 18, 16 and 14 px)
+  - LIX checkbox label changed to "Beräkna LIX-värde före och efter språkgranskning" for clarity
 
 #### Phase 3 - Global analyzer (LLM)
 

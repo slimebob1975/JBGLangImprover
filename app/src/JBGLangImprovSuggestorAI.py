@@ -412,7 +412,7 @@ class JBGLangImprovSuggestorAI:
             {"role": "system", "content": self.policy_prompt},
             {
                 "role": "user",
-                "content": f"Här är det dokument som ska granskas: {self.json_structured_document}."
+                "content": f"Här är det dokument som ska granskas: {json.dumps(self._reviewable_payload(self.json_structured_document.get('elements', [])), ensure_ascii=False)}."
             },
         ]
 
@@ -500,11 +500,17 @@ class JBGLangImprovSuggestorAI:
             self.logger.info(f"Running {num_chunks} model calls, at most {workers} at a time")
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="jbg-local-call") as pool:
-            futures = {
-                pool.submit(self._call_model, client, [system_msg, self._build_user_message_for_chunk(chunk)]): index
-                for index, chunk in enumerate(chunks)
-            }
+            futures = {}
             finished = 0
+            for index, chunk in enumerate(chunks):
+                user_msg = self._build_user_message_for_chunk(chunk)
+                if user_msg is None:
+                    # Delen innehåller bara tomma element: inget anrop behövs.
+                    results[index] = "[]"
+                    finished += 1
+                    self._report(f"Klar med {finished} av {num_chunks} anrop.")
+                    continue
+                futures[pool.submit(self._call_model, client, [system_msg, user_msg])] = index
             for future in as_completed(futures):
                 index = futures[future]
                 finished += 1
@@ -546,10 +552,42 @@ class JBGLangImprovSuggestorAI:
             )
         return response.choices[0].message.content or "[]"
 
+    @staticmethod
+    def _compact_element(element: dict) -> dict:
+        """
+        Det modellen behöver för ett element (G1.6): typ, id och text, samt
+        footnote_id för fotnoter (ska följa med i svaret) och heading_level för
+        rubriker (policyn har särskilda regler för rubriker). Sökvägar, index,
+        flaggor och formatmallar används inte av modellen och skickas inte.
+        """
+        compact = {
+            "type": element.get("type"),
+            "element_id": element.get("element_id"),
+            "text": element.get("text") or "",
+        }
+        if element.get("type") == "footnote" and element.get("footnote_id") is not None:
+            compact["footnote_id"] = element["footnote_id"]
+        if element.get("heading_level") is not None:
+            compact["heading_level"] = element["heading_level"]
+        return compact
+
+    def _reviewable_payload(self, chunk) -> list[dict]:
+        """Komprimerade element med text; tomma element har inget att granska."""
+        return [self._compact_element(e) for e in chunk if (e.get("text") or "").strip()]
+
     def _build_user_message_for_chunk(self, chunk):
+        """
+        Meddelandet för en del av dokumentet, eller None om delen saknar text.
+        Delningen i anrop görs fortfarande på de fullständiga elementen, så att
+        varje anrop innehåller samma text som tidigare; bara det som skickas
+        är mindre.
+        """
+        payload = self._reviewable_payload(chunk)
+        if not payload:
+            return None
         return {
             "role": "user",
-            "content": f"Här är en del av dokumentet som ska granskas: {json.dumps(chunk, ensure_ascii=False)}",
+            "content": f"Här är en del av dokumentet som ska granskas: {json.dumps(payload, ensure_ascii=False)}",
         }
 
     def _parse_model_response(self, raw_text: str) -> list[dict[str, Any]]:
