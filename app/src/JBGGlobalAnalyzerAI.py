@@ -42,6 +42,12 @@ GLOBAL_CATEGORIES = {
     "conclusion": "Slutsats som behöver stöd",
 }
 
+# Typiska platshållare som ska fyllas i före publicering. En sådan är aldrig en
+# mallkonvention, så den får rapporteras som troligt fel även på omslaget.
+PLACEHOLDER_RE = re.compile(
+    r"\bX{2,}\b|\bÅ{4}\b|\bD{2}\b|\b20[xX]{2}\b|\[[^\[\]]{2,}\]|\bTODO\b|(?i:börja skriva här)"
+)
+
 # Kategorier vars kommentar alltid sitter på en rubrik.
 HEADING_ANCHOR_CATEGORIES = {"disposition", "heading"}
 
@@ -405,7 +411,7 @@ class JBGGlobalAnalyzerAI:
 
             # Omslaget (allt före den första avsnittsrubriken) kommenteras aldrig:
             # titel, omslagsrutor och kolofon följer ofta en mall.
-            if anchor in cover_ids:
+            if anchor in cover_ids and not (category == "error" and PLACEHOLDER_RE.search(quote)):
                 result.rejected.append(RejectedFinding("cover_material", item))
                 continue
             ids = [ids[0]] + [i for i in ids[1:] if i not in cover_ids]
@@ -427,6 +433,12 @@ class JBGGlobalAnalyzerAI:
 
             if len(ids) < MIN_LOCATIONS.get(category, 2):
                 result.rejected.append(RejectedFinding(f"{category}_needs_two_locations", item))
+                continue
+
+            # Rubriker som återkommer (t.ex. samma inledning i flera faktarutor)
+            # är avsiktliga och räknas inte som upprepning; policyn säger detsamma.
+            if category == "repetition" and all(self._is_heading(elements.get(i, {})) for i in ids):
+                result.rejected.append(RejectedFinding("repetition_of_headings", item))
                 continue
 
             related_quote = " ".join(str(item.get("related_quote") or "").split())[:MAX_QUOTE_CHARS]

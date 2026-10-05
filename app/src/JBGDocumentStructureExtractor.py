@@ -344,7 +344,10 @@ class DocumentStructureExtractor:
     # Dokumentnivå: stilar, rubriknivåer och blockordning (G0.2)
     # ------------------------------------------------------------------
 
-    HEADING_NAME_RE = re.compile(r"^(?:heading|rubrik)\s*([1-9])$", re.IGNORECASE)
+    # "Heading 2", "Rubrik 2" eller egna namn som "IAF Rubrik 3 numrerad".
+    # Ordet måste stå för sig (inte "Bilagerubrik 1") och direkt följas av siffran
+    # (inte "Rubrik till textruta 2").
+    HEADING_NAME_RE = re.compile(r"(?<![^\W\d_])(?:heading|rubrik)\s*([1-9])\b", re.IGNORECASE)
     TITLE_NAMES = {"title", "rubrik"}
 
     def _build_style_index(self, doc) -> dict[str, Any]:
@@ -414,7 +417,7 @@ class DocumentStructureExtractor:
 
         # 3. Reserv: stilnamn (inbyggda namn lagras på engelska i styles.xml).
         name = (style_name or "").strip()
-        match = self.HEADING_NAME_RE.match(name)
+        match = self.HEADING_NAME_RE.search(name)
         if match:
             return style_id, style_name, int(match.group(1))
         if name.lower() in self.TITLE_NAMES:

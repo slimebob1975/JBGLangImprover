@@ -1271,7 +1271,7 @@ class JBGLangImprovSuggestorAI:
         # Likhetsreglerna jämför tecken, inte betydelse. Två väldefinierade slag
         # av korrekta omskrivningar ser olika ut men är säkra (se
         # _is_equivalent_rewrite) och undantas därför från båda reglerna.
-        equivalent = self._is_equivalent_rewrite(old, new)
+        equivalent = self._is_equivalent_rewrite(old, new) or self._removes_final_heading_punctuation(s, old, new)
 
         if not equivalent and self._too_low_overlap(old, new, s.element_type):
             return {"reject": True, "reason": "low_similarity"}
@@ -1319,6 +1319,21 @@ class JBGLangImprovSuggestorAI:
     # ett sådant ord räknas aldrig som en säker omskrivning.
     _NEGATION_WORDS = {"inte", "ej", "icke", "aldrig", "ingen", "inget", "inga", "utan"}
     _SHORT_WORDS_RE = re.compile(r"^[A-Za-zÅÄÖåäöÉéÜü]+(?:[ -][A-Za-zÅÄÖåäöÉéÜü]+){0,2}$")
+
+    def _removes_final_heading_punctuation(self, s: SuggestedChange, old: str, new: str) -> bool:
+        """
+        Policyn säger att rubriker aldrig avslutas med punkt. Att ta bort en
+        avslutande punkt eller ett avslutande kolon i en rubrik har likhet 0 men
+        är korrekt. Gäller bara när tecknet finns en gång i rubriken, så att det
+        inte kan vara ett annat tecken som avses.
+        """
+        if old not in {".", ":"} or new != "":
+            return False
+        element = self._get_docx_element_by_id(s.element_id) or {}
+        if element.get("heading_level") is None:
+            return False
+        text = (element.get("text") or "").rstrip()
+        return text.endswith(old) and text.count(old) == 1
 
     def _dates_and_rest(self, text: str) -> tuple[set, str]:
         dates = set()
