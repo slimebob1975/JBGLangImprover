@@ -188,7 +188,7 @@ async def upload_file(
     editable_prompt: str = Form(""),
     temperature: float = Form(0.7),
     include_motivations: bool = Form(True),
-    docx_mode: str = Form("simple"),
+    docx_mode: str = Form("tracked"),
     include_about_section: bool = Form(False),
     compute_lix: bool = Form(False),
     global_review: bool = Form(False),

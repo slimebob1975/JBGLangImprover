@@ -1268,7 +1268,12 @@ class JBGLangImprovSuggestorAI:
         if self._looks_like_corrupted_text(old):
             return {"reject": True, "reason": "corrupted_old_span"}
 
-        if self._too_low_overlap(old, new, s.element_type):
+        # Likhetsreglerna jämför tecken, inte betydelse. Två väldefinierade slag
+        # av korrekta omskrivningar ser olika ut men är säkra (se
+        # _is_equivalent_rewrite) och undantas därför från båda reglerna.
+        equivalent = self._is_equivalent_rewrite(old, new)
+
+        if not equivalent and self._too_low_overlap(old, new, s.element_type):
             return {"reject": True, "reason": "low_similarity"}
 
         if self._self_overlap_or_merge_risk(old, new):
@@ -1280,7 +1285,7 @@ class JBGLangImprovSuggestorAI:
         if self._looks_like_spelling_degradation(old, new):
             return {"reject": True, "reason": "spelling_degradation"}
 
-        if s.element_type in {"textbox", "footnote"} and self._similarity_ratio(old, new) < 0.45:
+        if not equivalent and s.element_type in {"textbox", "footnote"} and self._similarity_ratio(old, new) < 0.45:
             return {"reject": True, "reason": "low_similarity_sensitive_element"}
 
         element_text = self._get_element_text_for_suggestion(s)
@@ -1298,6 +1303,58 @@ class JBGLangImprovSuggestorAI:
         # small alphabet, so almost every character then becomes "popular"
         # and legitimate long rewrites can receive a near-zero score.
         return SequenceMatcher(None, old, new, autojunk=False).ratio()
+
+    _SWEDISH_MONTHS = {
+        name: number for number, name in enumerate(
+            ("januari", "februari", "mars", "april", "maj", "juni", "juli",
+             "augusti", "september", "oktober", "november", "december"), start=1)
+    }
+    _ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+    _WRITTEN_DATE_RE = re.compile(
+        r"\b(?:den\s+)?(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|"
+        r"september|oktober|november|december)\s+(\d{4})\b",
+        re.IGNORECASE,
+    )
+    # Ord som vänder betydelsen; ett kort ordbyte som lägger till eller tar bort
+    # ett sådant ord räknas aldrig som en säker omskrivning.
+    _NEGATION_WORDS = {"inte", "ej", "icke", "aldrig", "ingen", "inget", "inga", "utan"}
+    _SHORT_WORDS_RE = re.compile(r"^[A-Za-zÅÄÖåäöÉéÜü]+(?:[ -][A-Za-zÅÄÖåäöÉéÜü]+){0,2}$")
+
+    def _dates_and_rest(self, text: str) -> tuple[set, str]:
+        dates = set()
+        for year, month, day in self._ISO_DATE_RE.findall(text):
+            dates.add((int(year), int(month), int(day)))
+        for day, month, year in self._WRITTEN_DATE_RE.findall(text):
+            dates.add((int(year), self._SWEDISH_MONTHS[month.lower()], int(day)))
+        rest = self._WRITTEN_DATE_RE.sub(" ", self._ISO_DATE_RE.sub(" ", text))
+        return dates, " ".join(rest.split())
+
+    def _is_equivalent_rewrite(self, old: str, new: str) -> bool:
+        """
+        Omskrivningar som ser olika ut tecken för tecken men är säkra:
+        1. samma datum i ett annat skrivsätt, t.ex. "2024-09-24" -> "den 24
+           september 2024", utan några andra ändringar
+        2. ett kort ordbyte (1-3 ord, bara bokstäver, rimligt längdförhållande),
+           t.ex. "skedde" -> "gjordes" eller "rättslig grund" -> "lagstöd", som
+           inte lägger till eller tar bort en negation
+        """
+        old, new = old.strip(), new.strip()
+        if not old or not new:
+            return False
+
+        old_dates, old_rest = self._dates_and_rest(old)
+        if old_dates:
+            new_dates, new_rest = self._dates_and_rest(new)
+            return old_dates == new_dates and old_rest == new_rest
+
+        if self._SHORT_WORDS_RE.match(old) and self._SHORT_WORDS_RE.match(new):
+            old_words = set(old.lower().replace("-", " ").split())
+            new_words = set(new.lower().replace("-", " ").split())
+            if (old_words & self._NEGATION_WORDS) != (new_words & self._NEGATION_WORDS):
+                return False
+            return 1 / 3 <= len(new) / len(old) <= 3
+
+        return False
 
     # Ren skiljeteckensändring, t.ex. ett kommatecken som tas bort eller byts
     # mot semikolon. Har likhet 0 men är en vanlig och korrekt ändring.
