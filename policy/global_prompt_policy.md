@@ -125,7 +125,9 @@ Bedöm om avsnitten kommer i en ordning som gör det lätt för läsaren att fö
 
 Att texten efter en rubrik inte knyter an till texten före rubriken är normalt, eftersom en ny rubrik ofta börjar något nytt. Använd det bara som stöd i en iakttagelse om placeringen, aldrig som en egen iakttagelse.
 
-Lägg rubriken för det berörda avsnittet först i "element_ids". Ange gärna rubrikerna för de ställen som avsnittet kan flyttas till eller jämföras med. Om ordningen bör ändras, ange en möjlig ordning i "proposed_order".
+Föreslå bara ändringar inom ett kapitel, till exempel att två underavsnitt byter plats eller att ett underavsnitt flyttas till ett annat ställe i samma kapitel. Kapitlens ordning på översta nivån följer ofta en konvention för genren eller organisationen och ska inte ifrågasättas.
+
+Lägg rubriken för det berörda underavsnittet först i "element_ids". Ange gärna rubrikerna för de ställen som avsnittet kan flyttas till eller jämföras med. Om ordningen bör ändras, ange en möjlig ordning för underavsnitten i samma kapitel i "proposed_order".
 
 ### heading – förslag om rubrik
 
@@ -169,6 +171,7 @@ Bedöm bara stödet inom dokumentet. Formulera iakttagelsen som en fråga om und
 
 ## Omfattning
 
+- Kommentera inte omslaget, det vill säga allt som kommer före den första avsnittsrubriken, till exempel titel, omslagsrutor och kolofon.
 - Kommentera inte automatiskt genererat innehåll, och inte heller rubriker vars avsnitt bara består av sådant innehåll, till exempel rubriken ovanför en innehållsförteckning.
 
 - Ta med högst 10 iakttagelser per kategori för upprepningar, inkonsekvenser och troliga fel, och börja med de viktigaste.

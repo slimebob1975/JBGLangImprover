@@ -65,6 +65,26 @@ STRUCTURE = {"type": "docx", "elements": [
 ]}
 
 
+# En liten rapport med omslag, kapitel och underavsnitt
+CHAPTERED = {"type": "docx", "elements": [
+    _el("paragraph_1", "paragraph", "Rapportens titel", None, 1),
+    _el("table_9_cell_1_1_p1", "table_cell", "IAF:s tillsyn", 1, 2),
+    _el("table_9_cell_1_1_p2", "table_cell", "Syftet är att granska kontrollerna.", None, 3),
+    _el("paragraph_2", "paragraph", "Inledning", 1, 4),
+    _el("paragraph_3", "paragraph", "Syfte", 2, 5),
+    _el("paragraph_4", "paragraph", "Syftet är att granska kontrollerna.", None, 6),
+    _el("paragraph_5", "paragraph", "Metod", 2, 7),
+    _el("paragraph_6", "paragraph", "Vi har gått igenom ärenden.", None, 8),
+    _el("table_10_cell_1_1_p1", "table_cell", "Om urvalet", 1, 9),
+    _el("table_10_cell_1_1_p2", "table_cell", "Urvalet omfattar tusen ärenden.", None, 10),
+    _el("paragraph_7", "paragraph", "Resultat", 1, 11),
+    _el("paragraph_8", "paragraph", "Urval", 2, 12),
+    _el("paragraph_9", "paragraph", "Tusen ärenden granskades.", None, 13),
+    _el("paragraph_10", "paragraph", "Utfall", 2, 14),
+    _el("paragraph_11", "paragraph", "Felen var få.", None, 15),
+]}
+
+
 class OutlineTests(unittest.TestCase):
     def test_outline_is_body_text_in_reading_order(self):
         outline = build_outline(STRUCTURE)
@@ -128,6 +148,8 @@ class OutlineTests(unittest.TestCase):
         self.assertIn("aldrig som ett påstående om att slutsatsen är fel", policy)
         self.assertLess(policy.index("### Gemensamt för disposition och rubriker"), policy.index("### conclusion"))
         self.assertIn('"proposed_order"', policy)
+        self.assertIn("Föreslå bara ändringar inom ett kapitel", policy)
+        self.assertIn("Kommentera inte omslaget", policy)
         self.assertIn("hanteras i den lokala granskningen", policy)
 
 
@@ -292,13 +314,14 @@ class ParseAndValidateTests(unittest.TestCase):
         return result
 
     def disposition(self, **overrides):
+        # Underavsnittet "Metod" före "Syfte" i kapitlet "Inledning"
         item = {
             "category": "disposition",
             "element_ids": ["paragraph_5", "paragraph_3"],
-            "quote": "Resultat",
-            "description": "Resultaten presenteras före den metod de bygger på.",
-            "proposal": "Överväg att flytta avsnittet efter inledningen.",
-            "proposed_order": ["Sammanfattning", "Inledning", "Resultat"],
+            "quote": "Metod",
+            "description": "Metoden beskrivs innan syftet är klart för läsaren.",
+            "proposal": "Överväg att låta syftet komma före metoden.",
+            "proposed_order": ["Syfte", "Metod"],
         }
         item.update(overrides)
         return item
@@ -315,11 +338,13 @@ class ParseAndValidateTests(unittest.TestCase):
         return item
 
     def test_disposition_and_heading_findings_are_accepted_on_headings(self):
-        result = self.validate(self.disposition(), self.heading())
+        result = self.validate_in(
+            CHAPTERED, self.disposition(),
+            self.heading(element_ids=["paragraph_2"], quote="Inledning"),
+        )
         self.assertEqual([f.label for f in result.findings],
-                         ["Förslag om disposition", "Förslag om rubrik"])
-        self.assertEqual(result.findings[0].proposed_order, ["Sammanfattning", "Inledning", "Resultat"])
-        self.assertEqual(result.findings[1].element_ids, ["paragraph_3"])
+                         ["Förslag om disposition", "Förslag om rubrik"], [r.reason for r in result.rejected])
+        self.assertEqual(result.findings[0].proposed_order, ["Syfte", "Metod"])
 
     def test_comment_must_sit_on_a_heading_not_body_text_or_a_caption(self):
         result = self.validate_in(
@@ -332,51 +357,75 @@ class ParseAndValidateTests(unittest.TestCase):
                          ["anchor_not_a_heading", "anchor_not_a_heading"])
 
     def test_proposed_order_is_kept_only_when_all_headings_exist(self):
-        result = self.validate(
-            self.disposition(proposed_order=["sammanfattning ", "Resultat.", "Inledning"]),
-            self.disposition(element_ids=["paragraph_3", "paragraph_1"], quote="Inledning",
-                             proposed_order=["Inledning", "Metod", "Resultat"]),
+        result = self.validate_in(
+            CHAPTERED,
+            self.disposition(proposed_order=["syfte ", "Metod."]),
+            self.disposition(element_ids=["paragraph_3"], quote="Syfte",
+                             proposed_order=["Bakgrund", "Syfte", "Metod"]),
         )
         # Skiftläge, blanksteg och avslutande punkt spelar ingen roll; texten
         # hämtas från dokumentets riktiga rubriker.
-        self.assertEqual(result.findings[0].proposed_order, ["Sammanfattning", "Resultat", "Inledning"])
-        # "Metod" finns inte som rubrik: ordningen tas bort, iakttagelsen behålls
+        self.assertEqual(result.findings[0].proposed_order, ["Syfte", "Metod"])
+        # "Bakgrund" finns inte som rubrik: ordningen tas bort, iakttagelsen behålls
         self.assertEqual(result.findings[1].proposed_order, [])
-        self.assertEqual(len(result.findings), 2)
 
-    def structure_with_fact_box(self):
-        # Testkörningen b391e3ac: faktarutan "IAF:s tillsyn" är en tabell före förordet
-        structure = json.loads(json.dumps(STRUCTURE))
-        structure["elements"] += [
-            _el("table_9_cell_1_1_p1", "table_cell", "IAF:s tillsyn", 1, 0,
-                style_name="IAF Rubrik 1 - ej i innehållsförteckningen"),
-            _el("table_9_cell_1_1_p2", "table_cell", "IAF ansvarar för tillsynen över a-kassorna.", None, 0),
-        ]
-        return structure
+    # ---------------- Mallkonventioner: omslag och kapitelordning ----------------
+
+    def test_disposition_on_a_top_level_chapter_is_rejected(self):
+        # Testkörningen 2991c745: förslag att flytta ett kapitel före "Slutsatser"
+        result = self.validate_in(CHAPTERED, self.disposition(
+            element_ids=["paragraph_7", "paragraph_2"], quote="Resultat",
+            proposed_order=["Resultat", "Inledning"]))
+        self.assertEqual([r.reason for r in result.rejected], ["top_level_order"])
+
+    def test_proposed_order_must_stay_within_the_chapter(self):
+        result = self.validate_in(
+            CHAPTERED,
+            self.disposition(proposed_order=["Metod", "Urval"]),        # underavsnitt i ett annat kapitel
+            self.disposition(element_ids=["paragraph_5", "paragraph_6"], quote="Metod",
+                             proposed_order=["Metod", "Resultat"]),      # ett kapitel på översta nivån
+        )
+        self.assertEqual([f.proposed_order for f in result.findings], [[], []])
 
     def test_disposition_must_sit_on_a_body_section_heading(self):
-        result = self.validate_in(
-            self.structure_with_fact_box(),
-            self.disposition(element_ids=["table_9_cell_1_1_p1", "paragraph_1"], quote="IAF:s tillsyn",
-                             proposed_order=["Sammanfattning", "IAF:s tillsyn"]),
-        )
-        self.assertEqual(result.findings, [])
+        result = self.validate_in(CHAPTERED, self.disposition(
+            element_ids=["table_10_cell_1_1_p1", "paragraph_5"], quote="Om urvalet", proposed_order=[]))
         self.assertEqual([r.reason for r in result.rejected], ["anchor_not_a_section_heading"])
 
-    def test_heading_suggestions_may_still_sit_on_a_fact_box_heading(self):
-        result = self.validate_in(
-            self.structure_with_fact_box(),
-            self.heading(element_ids=["table_9_cell_1_1_p1"], quote="IAF:s tillsyn"),
-        )
+    def test_heading_suggestions_may_still_sit_on_a_fact_box_heading_in_the_body(self):
+        result = self.validate_in(CHAPTERED, self.heading(element_ids=["table_10_cell_1_1_p1"], quote="Om urvalet"))
         self.assertEqual(len(result.findings), 1, [r.reason for r in result.rejected])
 
-    def test_proposed_order_may_only_name_body_section_headings(self):
+    def test_cover_material_is_never_commented(self):
+        # Testkörningen cc61bb1e: rubrikförslag på rutan "IAF:s tillsyn" på omslagets insida
         result = self.validate_in(
-            self.structure_with_fact_box(),
-            self.disposition(proposed_order=["IAF:s tillsyn", "Sammanfattning", "Resultat"]),
+            CHAPTERED,
+            self.heading(element_ids=["table_9_cell_1_1_p1"], quote="IAF:s tillsyn"),
+            {"category": "error", "element_ids": ["paragraph_1"], "quote": "Rapportens titel",
+             "description": "Titeln ser ofullständig ut."},
         )
-        self.assertEqual(len(result.findings), 1)
-        self.assertEqual(result.findings[0].proposed_order, [])
+        self.assertEqual(result.findings, [])
+        self.assertEqual([r.reason for r in result.rejected], ["cover_material", "cover_material"])
+
+    def test_cover_elements_are_dropped_from_related_places(self):
+        result = self.validate_in(CHAPTERED, {
+            "category": "repetition",
+            "element_ids": ["paragraph_4", "table_9_cell_1_1_p2"],
+            "quote": "Syftet är att granska kontrollerna.",
+            "description": "Samma sak står på omslaget.",
+        })
+        self.assertEqual([r.reason for r in result.rejected], ["repetition_needs_two_locations"])
+
+    def test_no_cover_area_without_section_headings(self):
+        structure = {"elements": [
+            _el("paragraph_1", "paragraph", "Första stycket, med XX kvar.", None, 1),
+            _el("paragraph_2", "paragraph", "Andra stycket.", None, 2),
+        ]}
+        result = self.validate_in(structure, {
+            "category": "error", "element_ids": ["paragraph_1"], "quote": "med XX kvar",
+            "description": "Platshållare kvar.",
+        })
+        self.assertEqual(len(result.findings), 1, [r.reason for r in result.rejected])
 
     def test_disposition_and_heading_are_limited_to_five_each(self):
         # Sju unika rubrikförslag: samma rubrik, olika kombinationer av relaterade ställen

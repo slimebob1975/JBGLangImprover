@@ -751,16 +751,32 @@ class JBGLangImprovSuggestorAI:
                 )
                 return None
 
-        # 2. Trimma gemensam prefix
+        # 1b. Förslag som bara lägger till blanksteg ignoreras; de skulle bara ge
+        #     dubbla mellanslag (t.ex. "6 d §" -> "6 d § ").
+        if old.split() == new.split() and len(new) > len(old):
+            self.logger.info(
+                f"Ignoring whitespace-only addition for "
+                f"{suggestion.element_type}:{suggestion.element_id}"
+            )
+            return None
+
+        # 2. Trimma gemensam början, men aldrig mitt i ett ord på någon av sidorna.
+        #    Tecken för tecken skulle "bl.a." -> "bland annat" annars bli
+        #    ".a." -> "and annat", och "ha diagranm%" -> "har diagram" bli
+        #    " diagranm%" -> "r diagram".
         prefix_len = 0
         max_prefix = min(len(old), len(new))
         while prefix_len < max_prefix and old[prefix_len] == new[prefix_len]:
             prefix_len += 1
+        while prefix_len > 0 and (
+            self._cut_inside_word(old, prefix_len) or self._cut_inside_word(new, prefix_len)
+        ):
+            prefix_len -= 1
 
         old_rem = old[prefix_len:]
         new_rem = new[prefix_len:]
 
-        # 3. Trimma gemensam suffix
+        # 3. Trimma gemensamt slut på samma sätt
         suffix_len = 0
         max_suffix = min(len(old_rem), len(new_rem))
         while (
@@ -768,6 +784,11 @@ class JBGLangImprovSuggestorAI:
             and old_rem[-(suffix_len + 1)] == new_rem[-(suffix_len + 1)]
         ):
             suffix_len += 1
+        while suffix_len > 0 and (
+            self._cut_inside_word(old_rem, len(old_rem) - suffix_len)
+            or self._cut_inside_word(new_rem, len(new_rem) - suffix_len)
+        ):
+            suffix_len -= 1
 
         if suffix_len > 0:
             old_rem = old_rem[:-suffix_len]
@@ -796,6 +817,24 @@ class JBGLangImprovSuggestorAI:
             motivation=suggestion.motivation,
             match_status=suggestion.match_status,
         )
+
+    def _cut_inside_word(self, text: str, index: int) -> bool:
+        """
+        True om en delning före position index hamnar inne i ett ord, dvs.
+        med ett ordtecken på båda sidor. Punkter inne i förkortningar
+        ("bl.a.", "t.ex.") räknas också som en del av ordet.
+        """
+        if index <= 0 or index >= len(text):
+            return False
+        left, right = text[index - 1], text[index]
+        if self._is_word_char(left) and self._is_word_char(right):
+            return True
+        # Punkt mellan två ordtecken eller i slutet av en förkortning: "bl|.a.", "bl.|a."
+        if right == "." and self._is_word_char(left) and index + 1 < len(text) and self._is_word_char(text[index + 1]):
+            return True
+        if left == "." and self._is_word_char(right) and index >= 2 and self._is_word_char(text[index - 2]):
+            return True
+        return False
 
     def _expand_empty_old_minimization(self, old: str, new: str) -> Optional[tuple[str, str]]:
         """
@@ -931,35 +970,9 @@ class JBGLangImprovSuggestorAI:
 
         return left_midword or right_midword
 
-    def _looks_like_truncated_text(self, text: str) -> bool:
-        stripped = text.strip()
-        if not stripped:
-            return False
-
-        if not any(ch.isalpha() for ch in stripped):
-            return False
-
-        common_short_words = {
-            "de", "dem", "om", "av", "en", "ett", "är", "vi", "i", "på",
-            "att", "för", "med", "och", "det", "den", "som", "har"
-        }
-        if len(stripped) <= 3 and stripped.lower() not in common_short_words:
-            return True
-
-        if stripped.isalpha():
-            vowels = set("aeiouyåäöAEIOUYÅÄÖ")
-            vowel_count = sum(1 for ch in stripped if ch in vowels)
-
-            if len(stripped) >= 5 and vowel_count <= 1:
-                return True
-
-            if len(stripped) <= 4 and stripped.lower() not in common_short_words:
-                return True
-
-        if re.search(r"[A-Za-zÅÄÖåäö][^\w\s-]+[A-Za-zÅÄÖåäö]", stripped):
-            return True
-
-        return False
+    def _span_splits_a_word(self, element_text: str, start: int, end: int) -> bool:
+        """True om spannet börjar eller slutar inne i ett ord i elementets text."""
+        return self._cut_inside_word(element_text, start) or self._cut_inside_word(element_text, end)
 
     def _causes_obvious_duplication(
         self,
@@ -1076,12 +1089,13 @@ class JBGLangImprovSuggestorAI:
         safe = True
         reason = None
 
-        if self._looks_like_truncated_text(old):
+        # Ett fragment avgörs av var spannet ligger i texten, inte av hur det
+        # ser ut: korta ord som "dock" och förkortningar som "IAF" och "bl.a."
+        # är hela ord. Ett nytt textstycke som klistras ihop med ett grannord
+        # fångas av dubbleringskontrollen nedan.
+        if self._span_splits_a_word(element_text, start, end):
             safe = False
             reason = "old_looks_truncated"
-        elif new.strip() and self._looks_like_truncated_text(new):
-            safe = False
-            reason = "new_looks_truncated"
         elif self._causes_obvious_duplication(element_text, start, end, new):
             safe = False
             reason = "replacement_causes_obvious_duplication"
@@ -1247,7 +1261,13 @@ class JBGLangImprovSuggestorAI:
         # and legitimate long rewrites can receive a near-zero score.
         return SequenceMatcher(None, old, new, autojunk=False).ratio()
 
+    # Ren skiljeteckensändring, t.ex. ett kommatecken som tas bort eller byts
+    # mot semikolon. Har likhet 0 men är en vanlig och korrekt ändring.
+    PUNCTUATION_EDIT_MARKS = {",", ";"}
+
     def _too_low_overlap(self, old: str, new: str, element_type: str) -> bool:
+        if old.strip() in self.PUNCTUATION_EDIT_MARKS and new.strip() in self.PUNCTUATION_EDIT_MARKS | {"", ":"}:
+            return False
         ratio = self._similarity_ratio(old, new)
         short_local = max(len(old), len(new)) <= 25
 
@@ -1259,23 +1279,38 @@ class JBGLangImprovSuggestorAI:
 
         return False
 
+    # Giltiga former med skiljetecken mellan bokstäver, som tas bort innan
+    # texten kontrolleras: genitiv efter förkortning (IAF:s, ST:s), förkortningar
+    # med punkt (t.ex., bl.a., fr.o.m.) när de följs av blanksteg eller
+    # skiljetecken, samt webb- och e-postadresser.
+    _VALID_PUNCTUATED_FORMS = re.compile(
+        r"\b[A-ZÅÄÖ0-9]{2,}:[a-zåäö]+\b"
+        r"|\b(?:[a-zåäö]{1,3}\.){1,3}(?:[a-zåäö]{1,3}\.?)?(?=[\s,;:)]|$)"
+        r"|\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"
+        r"|\b(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:se|nu|com|org|net|eu|gov|int)\b",
+        re.IGNORECASE,
+    )
+
     def _looks_like_corrupted_text(self, text: str) -> bool:
+        """
+        Upptäcker uppenbart trasig text. Bygger på mönster som sällan
+        förekommer i korrekt text; giltiga former som "IAF:s", "t.ex." och
+        "iaf.se" tas bort först, eftersom de annars matchar mönstret
+        bokstav-skiljetecken-bokstav.
+        """
         t = (text or "").strip()
         if not t:
             return False
 
+        # Ihopskrivna ord med versal mitt i, t.ex. "kontrollernaVisar"
         if re.search(r"[a-zåäö]{2,}[A-ZÅÄÖ][a-zåäö]+", t):
             return True
 
-        if t.isalpha() and len(t) >= 6:
-            vowels = set("aeiouyåäöAEIOUYÅÄÖ")
-            vowel_count = sum(1 for ch in t if ch in vowels)
-            if vowel_count <= 1:
-                return True
-
-        if re.search(r"[A-Za-zÅÄÖåäö][^\w\s-]+[A-Za-zÅÄÖåäö]", t):
+        # Skiljetecken mellan bokstäver, t.ex. "ut.Nästa" eller "re,sultat"
+        if re.search(r"[A-Za-zÅÄÖåäö][^\w\s-]+[A-Za-zÅÄÖåäö]", self._VALID_PUNCTUATED_FORMS.sub(" ", t)):
             return True
 
+        # Samma tecken fyra gånger eller fler, t.ex. "!!!!"
         if re.search(r"(.)\1{3,}", t):
             return True
 

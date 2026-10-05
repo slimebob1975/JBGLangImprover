@@ -353,13 +353,14 @@ class JBGGlobalAnalyzerAI:
         elements = {e["element_id"]: e for e in structure.get("elements", [])}
         # Föreslagen ordning får bara innehålla avsnittsrubriker i brödtexten,
         # inte rubriker i faktarutor, tabeller eller textrutor.
-        heading_texts = {
-            self._normalize_heading(e.get("text") or ""): " ".join((e.get("text") or "").split())
+        heading_ids = {
+            self._normalize_heading(e.get("text") or ""): e["element_id"]
             for e in structure.get("elements", [])
             if is_section_heading(e)
         }
         seen: set[tuple[str, frozenset]] = set()
         per_category: dict[str, int] = {}
+        cover_ids, chapter_of, top_level = self._document_regions(structure)
 
         for part, item in raw_findings:
             if not isinstance(item, dict):
@@ -402,6 +403,13 @@ class JBGGlobalAnalyzerAI:
             ids.remove(anchor)
             ids.insert(0, anchor)
 
+            # Omslaget (allt före den första avsnittsrubriken) kommenteras aldrig:
+            # titel, omslagsrutor och kolofon följer ofta en mall.
+            if anchor in cover_ids:
+                result.rejected.append(RejectedFinding("cover_material", item))
+                continue
+            ids = [ids[0]] + [i for i in ids[1:] if i not in cover_ids]
+
             if category in HEADING_ANCHOR_CATEGORIES and not self._is_heading(elements.get(anchor, {})):
                 result.rejected.append(RejectedFinding("anchor_not_a_heading", item))
                 continue
@@ -410,6 +418,11 @@ class JBGGlobalAnalyzerAI:
             # omslagets insida som ingår i mallen) är inte avsnitt.
             if category == "disposition" and not is_section_heading(elements.get(anchor, {})):
                 result.rejected.append(RejectedFinding("anchor_not_a_section_heading", item))
+                continue
+            # Kapitlens ordning på översta nivån följer ofta en konvention (genre,
+            # organisation, mall). Disposition föreslås bara inom ett kapitel.
+            if category == "disposition" and elements[anchor].get("heading_level") == top_level:
+                result.rejected.append(RejectedFinding("top_level_order", item))
                 continue
 
             if len(ids) < MIN_LOCATIONS.get(category, 2):
@@ -451,9 +464,16 @@ class JBGGlobalAnalyzerAI:
             proposed_order: list[str] = []
             raw_order = item.get("proposed_order") if category == "disposition" else None
             if isinstance(raw_order, list) and raw_order:
-                matched = [heading_texts.get(self._normalize_heading(str(h))) for h in raw_order]
-                if all(matched) and len(matched) >= 2:
-                    proposed_order = matched
+                matched_ids = [heading_ids.get(self._normalize_heading(str(h))) for h in raw_order]
+                # Bara underavsnitt i samma kapitel som ankaret.
+                same_chapter = all(
+                    i is not None
+                    and elements[i].get("heading_level") != top_level
+                    and chapter_of.get(i) == chapter_of.get(anchor)
+                    for i in matched_ids
+                )
+                if same_chapter and len(matched_ids) >= 2:
+                    proposed_order = [" ".join(elements[i]["text"].split()) for i in matched_ids]
 
             result.findings.append(GlobalFinding(
                 category=category,
@@ -465,6 +485,32 @@ class JBGGlobalAnalyzerAI:
                 related_quote=related_quote,
                 proposed_order=proposed_order,
             ))
+
+    @staticmethod
+    def _document_regions(structure: dict) -> tuple[set[str], dict[str, Optional[str]], Optional[int]]:
+        """
+        (omslagets element-id, {element-id: id för kapitlets rubrik}, översta
+        rubriknivån). Omslaget är allt före den första avsnittsrubriken i
+        läsordning; utan avsnittsrubriker finns inget omslag.
+        """
+        ordered = sorted(
+            (e for e in structure.get("elements", []) if e.get("doc_order") is not None),
+            key=lambda e: e["doc_order"],
+        )
+        section_headings = [e for e in ordered if is_section_heading(e)]
+        if not section_headings:
+            return set(), {}, None
+        top_level = min(e["heading_level"] for e in section_headings)
+        first_order = section_headings[0]["doc_order"]
+
+        cover_ids = {e["element_id"] for e in ordered if e["doc_order"] < first_order}
+        chapter_of: dict[str, Optional[str]] = {}
+        chapter = None
+        for element in ordered:
+            if is_section_heading(element) and element["heading_level"] == top_level:
+                chapter = element["element_id"]
+            chapter_of[element["element_id"]] = chapter
+        return cover_ids, chapter_of, top_level
 
     @staticmethod
     def _is_heading(element: dict) -> bool:
