@@ -10,10 +10,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Literal, Any
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 try:
-    from app.src.JBGModelClient import create_openai_client
+    from app.src.JBGModelClient import create_openai_client, max_parallel_model_calls
 except ModuleNotFoundError:
-    from JBGModelClient import create_openai_client
+    from JBGModelClient import create_openai_client, max_parallel_model_calls
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -456,23 +458,23 @@ class JBGLangImprovSuggestorAI:
         all_raw_suggestions: list[dict[str, Any]] = []
         all_validated: list[SuggestedChange] = []
 
-        # Ingen fast paus mellan anropen: OpenAI-biblioteket försöker själv igen
-        # vid hastighetsbegränsning och tillfälliga fel (se JBGModelClient).
-        for i, chunk in enumerate(chunks, start=1):
-            self._report(f"Gör API-anrop {i} av {num_chunks}.")
-            messages = [system_msg, self._build_user_message_for_chunk(chunk)]
+        # 1. Modellanropen körs parallellt (högst max_parallel_model_calls() åt
+        #    gången). OpenAI-biblioteket försöker själv igen vid hastighets-
+        #    begränsning och tillfälliga fel (se JBGModelClient).
+        raw_texts = self._call_model_for_chunks(client, system_msg, chunks)
 
+        # 2. Svaren tolkas och valideras i delarnas ordning, i samma tråd som
+        #    tidigare, så att förslagen kommer i samma ordning som vid anrop i följd.
+        for i, raw_text in enumerate(raw_texts, start=1):
+            if raw_text is None:
+                continue   # anropet misslyckades; felet är redan rapporterat
             try:
-                raw_text = self._call_model(client, messages)
                 parsed = self._parse_model_response(raw_text)
                 validated = self._postprocess_suggestions(parsed)
-
                 all_raw_suggestions.extend(parsed)
                 all_validated.extend(validated)
-
-                self._report(f"Klar med API-anrop {i} av {num_chunks}.")
             except Exception as e:
-                msg = f"Fel i API-anrop {i} av {num_chunks}: {e}"
+                msg = f"Fel i svaret från API-anrop {i} av {num_chunks}: {e}"
                 self.logger.error(msg)
                 self._report(msg)
 
@@ -484,6 +486,36 @@ class JBGLangImprovSuggestorAI:
         self.filtered_review = reviewed
 
         self._report("Alla AI-förslag är genererade, validerade och filtrerade.")
+
+    def _call_model_for_chunks(self, client, system_msg, chunks) -> list[Optional[str]]:
+        """
+        Skickar en fråga per del, högst max_parallel_model_calls() samtidigt.
+        Returnerar svaren i delarnas ordning; None för ett anrop som misslyckades.
+        Bara själva anropen körs i trådar; _call_model räknar tokens trådsäkert.
+        """
+        num_chunks = len(chunks)
+        workers = min(max_parallel_model_calls(), num_chunks) or 1
+        results: list[Optional[str]] = [None] * num_chunks
+        if num_chunks > 1:
+            self.logger.info(f"Running {num_chunks} model calls, at most {workers} at a time")
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="jbg-local-call") as pool:
+            futures = {
+                pool.submit(self._call_model, client, [system_msg, self._build_user_message_for_chunk(chunk)]): index
+                for index, chunk in enumerate(chunks)
+            }
+            finished = 0
+            for future in as_completed(futures):
+                index = futures[future]
+                finished += 1
+                try:
+                    results[index] = future.result()
+                except Exception as e:
+                    msg = f"Fel i API-anrop {index + 1} av {num_chunks}: {e}"
+                    self.logger.error(msg)
+                    self._report(msg)
+                self._report(f"Klar med {finished} av {num_chunks} anrop.")
+        return results
 
     # -------------------------------------------------------------------------
     # Modellanrop / parsing

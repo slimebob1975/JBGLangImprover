@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import os
 import sys
 import json
@@ -144,9 +145,16 @@ class JBGLanguageImprover:
                 "för test av den ombyggda Word-pipelinen."
             )
 
+        global_pool = global_future = None
         try:
             self._report("Analyserar dokumentets struktur...")
             self.structure = self._extract_structure()
+
+            # Den globala granskningen bygger bara på strukturen och körs därför
+            # vid sidan av den lokala, i stället för efter den.
+            if self.global_review:
+                global_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jbg-global")
+                global_future = global_pool.submit(self._run_global_review)
 
             self._report("Skickar dokumentet till språkmodellen för förslag...")
             self.validated_suggestions = self._generate_suggestions()
@@ -157,8 +165,9 @@ class JBGLanguageImprover:
             else:
                 self.logger.info("LIX computation disabled by user")
 
-            if self.global_review:
-                self._run_global_review()
+            if global_future is not None:
+                self._report("Väntar på granskningen av dokumentet som helhet...")
+                global_future.result()   # fel hanteras i _run_global_review
 
             self._report("Bygger ändringsplan...")
             self.change_plans = self._build_change_plans()
@@ -175,6 +184,8 @@ class JBGLanguageImprover:
         else:
             self.run_summary.finish(succeeded=True)
         finally:
+            if global_pool is not None:
+                global_pool.shutdown(wait=True)
             self._save_run_summary()
 
         self._report("Klart.")
