@@ -9,7 +9,7 @@
 - [ ] A proposal in a paragraph with a hyperlink failed to render ("Could not resolve changed run span"; test run c7c86075, "Våra rapporter finns publicerade på vår webbplats www.iaf.se."). The renderer probably cannot split runs inside `w:hyperlink`; add a regression test with a hyperlink in the changed span
 - [ ] Decide whether replacing a pronoun with what it refers to should pass the similarity check, e.g. `de` -> `Arbetsförmedlingen` in fact boxes (test run c7c86075). It is a common clarity fix, but the replacement is much longer than the original, so today it is rejected as `low_similarity`
 - [ ] Global findings vary considerably between runs of the same document (e.g. a within-section repetition found in two runs and missing in the third); consider a lower temperature for the global call where the model allows it
-- [ ] The extractor does not read text inside body-level content controls (`w:sdt`), because it only reads paragraphs and tables directly in the body, so such text is neither reviewed locally nor globally. Generated content in content controls (tables of contents) is already handled as a placeholder (G3.f). Before fixing: check whether the templates put real text (cover fields, standard text) in content controls. The fix needs new element ids (e.g. `sdt_2_p1`) so existing ids do not shift, and support in both renderers and the comment anchoring. Together with this: recognize Word's own template markers, generic and reliable when present — locked content controls (`w:lock`), document protection with editable ranges (`w:permStart`/`w:permEnd`, where everything outside is standard content) and placeholder text (`w:showingPlcHdr`) — and keep such content out of the global (and possibly local) review
+- [ ] The extractor does not read text inside body-level content controls (`w:sdt`), because it only reads paragraphs and tables directly in the body, so such text is neither reviewed locally nor globally. Generated content in content controls (tables of contents) is already handled as a placeholder (G3.f). Before fixing: check whether the templates put real text (cover fields, standard text) in content controls. The fix needs new element ids (e.g. `sdt_2_p1`) so existing ids do not shift, and support in both renderers and the comment anchoring. Word template elements inside content controls are covered by the template-elements item
 
 ## Planned improvments
 
@@ -101,6 +101,14 @@ Finding categories, to be implemented in this order:
   - Anchored on the passage itself (body paragraph, table cell or text box); one place is enough, and the section heading may be given as a related place
   - Same rules as the other categories: respectful wording, quote verified against the text, no comments on the cover area or on generated content, at most 5 findings (`MAX_PER_CATEGORY`)
   - Risk of false positives is high (background, definitions and examples can look off-topic), so the policy should only flag clear cases and the category should be evaluated on several reports before relying on it
+- [ ] Ignore Word template elements: content created by Word's template mechanisms, rather than written by the authors, should get no local proposals and no global comments, and should not count in LIX. Recognized from Word markup in the uploaded document itself (no template files, numbering or style names):
+  - content controls (`w:sdt`) that show placeholder text (`w:showingPlcHdr`), and locked content controls (`w:lock` with `sdtLocked` or `contentLocked`)
+  - building blocks inserted from Word's galleries (`w:docPartObj`/`w:docPartGallery`, e.g. Cover Pages, Text Boxes, Quick Parts); tables of contents, lists of figures and bibliographies are already handled as generated content (G3.f)
+  - classic template prompts in `MACROBUTTON` fields (e.g. "[Klicka här och skriv]") and legacy form fields (`w:ffData`)
+  - in protected documents (`w:documentProtection`), text outside the editable ranges (`w:permStart`/`w:permEnd`)
+  - hidden text is already skipped
+  - Needs: reading text inside body-level content controls (see the content-control item under Known issues), with new element ids such as `sdt_2_p1` so existing ids do not shift
+  - To decide: whether a content control still showing its placeholder text should be reported once as "Troligt fel" (it must be filled in before publication) or be ignored completely
 - [ ] G3.e Further checks (e.g. missing summary, undefined abbreviations at first use, promised content that never appears)
 
 #### Phase 4 - Rendering of global findings
