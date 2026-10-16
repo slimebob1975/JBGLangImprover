@@ -13,6 +13,17 @@
 
 ## Planned improvments
 
+### Data handling and retention
+
+Findings from reading `app/main.py`: files are only deleted by `clean_old_files()`, which runs at the start of every upload (uploads and results older than 1 hour, logs older than 30 days). Nothing is deleted when a run finishes or a result is downloaded.
+
+- [ ] Delete the uploaded Word file and its JSON files (structure, suggestions, filter report, global findings, run summary) as soon as the run has finished, successfully or not. The structure JSON holds the full document text, so today the content is stored twice for at least an hour, and indefinitely if no new upload triggers the cleanup. Keep an option to retain them for debugging (e.g. an environment variable, off by default)
+- [ ] Delete the result file once it has been downloaded, with a time limit as a fallback (e.g. 1 hour) for results never downloaded
+- [ ] Run the cleanup on a timer (e.g. every 10 minutes) instead of only at the next upload, so files do not stay on the server when the service is idle (e.g. over a weekend)
+- [ ] Keep document text out of the logs: rejected proposals are logged with their old and new text, and the file name is logged, so excerpts of documents are kept for 30 days, far longer than the documents themselves. Log element ids, reasons and lengths instead, or redact the text; consider a shorter log retention
+- [ ] Prune finished jobs from the in-memory job list (`jobs_lang`) after the same time limit; today it grows until the service restarts
+- [ ] Document the retention rules in the README (what is stored, where, and for how long), and check where the deployed service stores files (e.g. persistent `/home` storage on Azure App Service)
+
 ### GUI
 
 - [x] Tracked changes ("Spåra ändringar och infogade kommentarer") is the default result mode in the form and in `/upload/`; the form defaults are pinned by `tests/test_gui_defaults.py`
