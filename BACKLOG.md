@@ -26,6 +26,12 @@ Findings from reading `app/main.py`: files are only deleted by `clean_old_files(
 
 ### GUI
 
+- [ ] Show a version number and the GitHub commit under the application title, e.g. "Version 1.4.0 · a1b2c3d (dev)", in the same small style as the "Inloggad som" line. Design:
+  - Version number: a `VERSION` file in the repository (e.g. `1.4.0`), updated by hand at each release, or taken from a git tag in the workflow (`git describe --tags`)
+  - Commit: the deployed app cannot ask git, because the workflows package it with `zip release.zip ./* -r`, which leaves out `.git`. Instead, the build step writes a `build_info.json` before zipping, with the commit (`GITHUB_SHA`, shown short), branch (`GITHUB_REF_NAME`), workflow run number and build time. Locally, fall back to `git rev-parse --short HEAD` when `.git` exists, otherwise show "lokal"
+  - `/config` returns version, commit and environment (dev/prod) along with the title; `script.js` shows them under the title. The commit could link to the commit page on GitHub
+  - Also record version and commit in `<file>_run_summary.json` and in the "Om klarspråkningen" section, so every result document can be traced to the exact code that produced it
+  - Both workflow files (dev and prod) need the extra build step
 - [x] Tracked changes ("Spåra ändringar och infogade kommentarer") is the default result mode in the form and in `/upload/`; the form defaults are pinned by `tests/test_gui_defaults.py`
 - [ ] In the long run, possibly make "Spåra ändringar och infogade kommentarer" the only result mode (it is the default since this patch). The GUI could then be simplified from the two radio buttons to two checkboxes: "Spåra ändringar" and "Infogade kommentarer" (the latter maps to the existing `include_motivations` option, today hidden and always on). Before removing simple markup: check whether anyone depends on it, and decide what the comments checkbox means without tracked changes (simple markup has no comments today)
 - [x] Show "Inloggad som: …" at the top of the page, like the sister service: `/me` returns the name from Azure App Service authentication (header `X-MS-CLIENT-PRINCIPAL-NAME`, URL-decoded, max 200 characters) and `script.js` shows it under the subtitle. Without a login (e.g. locally) the line reads "Inloggad som: okänd användare", like the sister service; if the call fails, the line stays hidden. Display only: the name is never used for authorization
