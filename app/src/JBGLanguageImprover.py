@@ -16,6 +16,7 @@ try:
     from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
     from app.src.JBGUsageTracker import UsageTracker
     from app.src.JBGRunSummary import RunSummary
+    from app.src.JBGBuildInfo import get_build_info
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
     from app.src.JBGGlobalFindingsRenderer import GlobalFindingsRenderer
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
     from JBGTrackedChangesRenderer import TrackedChangesRenderer
     from JBGUsageTracker import UsageTracker
     from JBGRunSummary import RunSummary
+    from JBGBuildInfo import get_build_info
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
     from JBGGlobalFindingsRenderer import GlobalFindingsRenderer
@@ -126,6 +128,10 @@ class JBGLanguageImprover:
             compute_readability=self.compute_readability,
             global_review=self.global_review,
         )
+        build = get_build_info()
+        self.run_summary.app_version = build["version"]
+        self.run_summary.app_commit = build["commit"] or None
+        self.run_summary.app_environment = build["environment"]
 
         self.structure = None
         self.validated_suggestions = []

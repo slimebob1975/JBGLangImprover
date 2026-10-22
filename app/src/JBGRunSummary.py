@@ -33,6 +33,10 @@ class RunSummary:
     compute_readability: bool = True
     global_review: bool = False
     prompt_customized: Optional[bool] = None   # None = okänt (t.ex. CLI-körning)
+    # Programversionen som tog fram resultatet (VERSION och build_info.json)
+    app_version: Optional[str] = None
+    app_commit: Optional[str] = None
+    app_environment: Optional[str] = None
     started_at: str = field(default_factory=lambda: _now())
     finished_at: Optional[str] = None
     succeeded: bool = False

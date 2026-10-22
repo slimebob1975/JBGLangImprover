@@ -257,6 +257,12 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
     # --- Körningen
     blocks.append(_item("Datum", _fmt_date(summary.get("started_at"))))
     blocks.append(_item("Språkmodell", str(summary.get("model") or "okänd")))
+    if summary.get("app_version"):
+        version = str(summary["app_version"])
+        details = [d for d in ((summary.get("app_commit") or "")[:7], summary.get("app_environment")) if d]
+        if details:
+            version += f" ({', '.join(details)})"
+        blocks.append(_item("Programversion", version))
     if summary.get("docx_mode") == "tracked":
         presentation = "Spåra ändringar"
         if summary.get("include_motivations"):

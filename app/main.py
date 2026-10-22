@@ -1,5 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, Request, Form, Response, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.background import BackgroundTask
+from contextlib import asynccontextmanager
+import asyncio
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
@@ -11,6 +14,8 @@ import logging
 from datetime import datetime
 import time
 from app.src.JBGLanguageImprover import JBGLanguageImprover
+from app.src.JBGDataRetention import delete_files, keep_debug_data, run_file_paths
+from app.src.JBGBuildInfo import get_build_info
 import uuid
 
 KEEP_FILES_DAYS = 0
@@ -106,7 +111,58 @@ def validate_prompt(editable_part: str):
 
 
 # We are using FastAPI for the backend
-app = FastAPI()
+# ---------------------------------------------------------------------------
+# Datahantering: städning på timer (inte bara vid nästa uppladdning)
+# ---------------------------------------------------------------------------
+
+CLEANUP_INTERVAL_SECONDS = 600          # var tionde minut
+JOB_RETENTION_SECONDS = 3600            # färdiga jobb glöms efter en timme
+UNFINISHED_JOB_RETENTION_SECONDS = 24 * 3600
+cleanup_logger = logging.getLogger("jbg.cleanup")
+
+
+def prune_jobs(now=None) -> int:
+    """Tar bort gamla jobb ur minnet; pågående jobb får finnas kvar längre."""
+    now = now if now is not None else time.time()
+    removed = 0
+    for job_id, job in list(jobs_lang.items()):
+        age = now - job.get("created_at", now)
+        limit = JOB_RETENTION_SECONDS if job.get("done") else UNFINISHED_JOB_RETENTION_SECONDS
+        if age > limit:
+            jobs_lang.pop(job_id, None)
+            removed += 1
+    return removed
+
+
+def run_cleanup(logger) -> None:
+    """Uppladdningar och resultat äldre än en timme, loggar äldre än 30 dagar, gamla jobb."""
+    clean_old_files(UPLOAD_DIR, logger, max_age_days=0, max_age_hours=1)
+    clean_old_files(RESULTS_DIR, logger, max_age_days=0, max_age_hours=1)
+    clean_old_files(LOG_DIR, logger, max_age_days=30, max_age_hours=0)
+    removed = prune_jobs()
+    if removed:
+        logger.info(f"🧼 Removed {removed} old jobs from memory.")
+
+
+async def _periodic_cleanup():
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        try:
+            run_cleanup(cleanup_logger)
+        except Exception as ex:   # städningen får aldrig stoppa tjänsten
+            cleanup_logger.warning(f"Periodic cleanup failed: {ex}")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(_periodic_cleanup())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Directories
 UPLOAD_DIR = "uploads"
@@ -154,7 +210,7 @@ app.add_middleware(FrameOptionsMiddleware)
 def get_config():
     title = os.getenv("APP_TITLE", "JBG Klarspråkning")
     print(f" Appens titel: {title}")
-    return {"title": title}
+    return {"title": title, "version": get_build_info()}
 
 # Maximal längd på visat användarnamn (skydd mot orimliga rubrikvärden)
 MAX_USER_DISPLAY_CHARS = 200
@@ -204,6 +260,7 @@ async def upload_file(
         "status": "✅ Fil uppladdad.",
         "done": False,
         "error": None,
+        "created_at": time.time(),
     }
 
     # Save uploaded file
@@ -212,9 +269,7 @@ async def upload_file(
 
     # Setup logger and cleanup old files
     logger = setup_run_logger(log_path)
-    clean_old_files(UPLOAD_DIR, logger, max_age_days=0, max_age_hours=1)
-    clean_old_files(LOG_DIR, logger, max_age_days=30, max_age_hours=0)
-    clean_old_files(RESULTS_DIR, logger, max_age_days=0, max_age_hours=1)
+    run_cleanup(logger)
     logger.info(f"📥 Received file: {file.filename}")
     logger.info(f"Saving to: {input_path}")
     logger.info(f"🌡️ Temperature: {temperature}")
@@ -271,6 +326,14 @@ async def upload_file(
             job["done"] = True
             job["error"] = str(e)
             job["status"] = "Ett fel uppstod vid språkgranskningen."
+        finally:
+            # Uppladdningen och diagnostikfilerna (strukturfilen innehåller hela
+            # dokumentets text) tas bort direkt, om de inte ska sparas för felsökning.
+            if keep_debug_data():
+                logger.info("🔍 JBG_KEEP_DEBUG_DATA is set: upload and diagnostic files are kept")
+            else:
+                deleted = delete_files(run_file_paths(input_path), logger)
+                logger.info(f"🧹 Deleted {deleted} run files (upload and diagnostics)")
 
     background_tasks.add_task(run_language_improvement)
 
@@ -346,7 +409,14 @@ def download_result(job_id: str):
     output_path = os.path.join(RESULTS_DIR, f"{job_id}.result.docx")
     if not os.path.exists(output_path):
         return {"error": "Result not found yet"}
-    return FileResponse(path=output_path, filename=f"{job_id}.docx", media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    # Resultatet tas bort när det har skickats; en timme är reservgränsen för
+    # resultat som aldrig hämtas (se run_cleanup).
+    return FileResponse(
+        path=output_path,
+        filename=f"{job_id}.docx",
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        background=BackgroundTask(delete_files, [output_path], cleanup_logger),
+    )
 
 async def upload_file_old(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
     editable_prompt: str = Form(""), temperature: float = Form(0.7), include_motivations: bool = Form(True), \

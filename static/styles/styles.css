@@ -123,6 +123,7 @@ form label {
    oavsett skärmbredd. */
 #wrapper > h1,
 #wrapper > h3,
+#wrapper > .version-display,
 #wrapper > .user-display {
     max-width: 500px;
     margin-left: auto;
@@ -130,6 +131,21 @@ form label {
 }
 
 /* === Inloggad användare, under underrubriken === */
+/* === Version under rubriken === */
+.version-display {
+    margin: -0.85rem 0 1rem 0;
+    font-size: 0.75rem;
+    color: #777;
+}
+
+.version-display a {
+    color: inherit;
+}
+
+.version-display[hidden] {
+    display: none;
+}
+
 .user-display {
     margin: 0 0 0.9rem 0;
     font-size: 0.85rem;

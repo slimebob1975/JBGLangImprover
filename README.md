@@ -178,7 +178,7 @@ When the section is off but LIX is on, LIX is added as a comment on the document
 
 ## Output files
 
-Each run writes, next to the uploaded file (cleaned up automatically):
+Each run writes, next to the uploaded file (see [Data handling and retention](#data-handling-and-retention) for how long they are kept):
 
 | File | Content |
 |---|---|
@@ -191,6 +191,22 @@ Each run writes, next to the uploaded file (cleaned up automatically):
 
 ---
 
+## Data handling and retention
+
+| What | Kept |
+|---|---|
+| The uploaded Word file and its JSON files | deleted as soon as the run is finished, also after an error |
+| The result file | deleted as soon as it has been downloaded; at most 1 hour if it is never downloaded |
+| Logs (`logs/<job_id>.log`) | 30 days; they contain no document text, only element ids, reasons and text lengths |
+| Unpacked working copies of the Word file | deleted as soon as each step is done |
+| A job's status in memory | 1 hour after the job finished (24 hours for unfinished jobs) |
+
+The cleanup runs every 10 minutes and at every upload, so nothing depends on new uploads. The file name of the uploaded document is written to the log.
+
+For troubleshooting, set `JBG_KEEP_DEBUG_DATA=1`: the upload and its JSON files are then kept (until the 1-hour cleanup) and the logs show the text of rejected proposals. Use it in development environments only.
+
+---
+
 ## Configuration
 
 Settings in `.env` (see `.env_template`):
@@ -200,8 +216,16 @@ Settings in `.env` (see `.env_template`):
 | `FRAME_ANCESTORS` | Allowed parent pages when the service is embedded in an iframe |
 | `APP_TITLE` | Title shown in the page |
 | `JBG_MAX_PARALLEL_MODEL_CALLS` | Simultaneous local model calls (default 4; 1 = in sequence) |
+| `JBG_KEEP_DEBUG_DATA` | `1` keeps uploads and JSON files after the run and shows document text in the logs (development only; default off) |
 
 Model calls are retried automatically on rate limits, server errors and timeouts (4 retries, handled by the OpenAI library). The logged-in user name comes from the `X-MS-CLIENT-PRINCIPAL-NAME` header set by Azure App Service authentication.
+
+### Version
+
+The page shows the version under the title, e.g. "Version 1.0.0 · a1b2c3d (dev)", and the same information is saved in `<file>_run_summary.json` and in "Om klarspråkningen", so every result can be traced to the code that produced it.
+
+- The version number is in the file `VERSION`; update it by hand for each release.
+- Commit, branch and environment come from `build_info.json`, written by `scripts/write_build_info.py` in the build step of both workflows (the deployed package does not contain `.git`). Locally, the commit is read from git; without git the line shows "(lokal)".
 
 Endpoints: `/` (the page), `/config`, `/me`, `/get_editable_prompt/`, `/upload/`, `/status/{job_id}`, `/download/{job_id}`, `/healthz`.
 

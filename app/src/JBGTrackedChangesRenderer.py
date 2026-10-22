@@ -6,9 +6,11 @@ from lxml import etree
 
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
+    from app.src.JBGDataRetention import loggable_text
     from app.src.JBGRevisionIds import max_revision_id
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
+    from JBGDataRetention import loggable_text
     from JBGRevisionIds import max_revision_id
 
 try:
@@ -358,7 +360,7 @@ class TrackedChangesRenderer:
         matched = visible_text[anchor_start:anchor_end]
         if not self._texts_match_leniently(matched, old_text):
             raise ValueError(
-                f"Anchor text mismatch. Expected old_text={old_text!r}, found={matched!r}"
+                f"Anchor text mismatch. Expected old_text={loggable_text(old_text)}, found={loggable_text(matched)}"
             )
 
         first_node = overlapping_nodes[0]

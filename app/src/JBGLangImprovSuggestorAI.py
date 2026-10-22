@@ -14,8 +14,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from app.src.JBGModelClient import create_openai_client, max_parallel_model_calls
+    from app.src.JBGDataRetention import loggable_text
 except ModuleNotFoundError:
     from JBGModelClient import create_openai_client, max_parallel_model_calls
+    from JBGDataRetention import loggable_text
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -604,7 +606,9 @@ class JBGLangImprovSuggestorAI:
         normalized_items: list[dict[str, Any]] = []
         for idx, item in enumerate(parsed):
             if not isinstance(item, dict):
-                self.logger.warning(f"Skipping non-object suggestion at index {idx}: {item!r}")
+                self.logger.warning(
+                    f"Skipping non-object suggestion at index {idx}: {loggable_text(str(item))}"
+                )
                 continue
             normalized_items.append(item)
 
@@ -758,7 +762,8 @@ class JBGLangImprovSuggestorAI:
         if not stabilized.safe_to_apply:
             self.logger.warning(
                 f"Marked suggestion unsafe [{stabilized.element_type}:{stabilized.element_id}] "
-                f"{stabilized.safety_reason}: old={stabilized.old!r}, new={stabilized.new!r}"
+                f"{stabilized.safety_reason}: old={loggable_text(stabilized.old)}, "
+                f"new={loggable_text(stabilized.new)}"
             )
 
         return stabilized
@@ -1173,7 +1178,7 @@ class JBGLangImprovSuggestorAI:
                     f"Rejected unsafe suggestion "
                     f"[{s.element_type}:{s.element_id}] "
                     f"reason={verdict['reason']} "
-                    f"old={s.old!r} new={s.new!r}"
+                    f"old={loggable_text(s.old)} new={loggable_text(s.new)}"
                 )
                 continue
 
