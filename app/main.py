@@ -418,58 +418,6 @@ def download_result(job_id: str):
         background=BackgroundTask(delete_files, [output_path], cleanup_logger),
     )
 
-async def upload_file_old(file: UploadFile = File(...), api_key: str = Form(...), model: str = Form(...), \
-    editable_prompt: str = Form(""), temperature: float = Form(0.7), include_motivations: bool = Form(True), \
-    docx_mode: str = Form("simple")):
-    
-    # Create fresh timestamp for each request
-    # Create timestamped log file for this run
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = os.path.join(LOG_DIR, f"run-{timestamp}.log")
-    
-    # Save uploaded file
-    input_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(input_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-        
-    # Log upload and saving path
-    logger = setup_run_logger(log_path)
-    clean_old_files(UPLOAD_DIR, logger, max_age_days=0, max_age_hours=1)
-    clean_old_files(LOG_DIR, logger, max_age_days=7, max_age_hours=0)
-    logger.info(f"📥 Received file: {file.filename}")
-    logger.info(f"Saving to: {input_path}")
-    logger.info(f"🌡️ Temperature: {temperature}")
-    logger.info(f"💬 Include motivations: {include_motivations}")
-    logger.info(f"📝 DOCX markup mode: {docx_mode}")
-    
-    # Load base prompt policy from file
-    # Instead of opening whole prompt_policy.md
-    editable_part = editable_prompt.strip()
-    _, locked_before, locked_after = load_prompt_parts(os.path.join(BASE_DIR, "policy", "prompt_policy.md"))
-
-    # Build full prompt
-    full_prompt = f"{locked_before}\n\n{editable_part}\n\n{locked_after}"
-    validate_prompt(full_prompt)
-
-    # Run language improvement pipeline
-    improver = JBGLanguageImprover(
-        input_path=input_path,
-        api_key=api_key,
-        model=model,
-        prompt_policy=full_prompt,
-        temperature=temperature,
-        include_motivations=include_motivations,
-        docx_mode=docx_mode,
-        logger=logger
-    )
-    output_path = improver.run()
-
-    return FileResponse(
-        path=output_path,
-        filename=os.path.basename(output_path),
-        media_type='application/octet-stream'
-    )
-    
 @app.get("/healthz")
 def healthz():
     return {"ok": True}

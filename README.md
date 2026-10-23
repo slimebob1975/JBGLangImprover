@@ -131,6 +131,7 @@ Before a local proposal is used, the service:
 
 - trims it to the smallest changed span, without ever cutting inside a word (dots in abbreviations such as "bl.a." count as part of the word)
 - rejects spans that start or end inside a word in the actual text, new text glued onto a neighbouring word, and obviously garbled text (valid forms such as "IAF:s", "t.ex." and web addresses are recognized)
+- rejects any change to a legal reference ("6 c §", "1 kap. 6 §", SFS numbers such as "1997:238")
 - rejects replacements too different from the original (`low_similarity`), with an exception for pure comma and semicolon edits
 - ignores changes that only add whitespace
 
@@ -282,7 +283,7 @@ The suite (170 tests) builds temporary Word documents and uses a simulated model
 python -m unittest discover -s tests -v
 ```
 
-Tests that need FastAPI are skipped automatically where it is not installed.
+Tests that need FastAPI are skipped automatically where it is not installed. The project depends on `bayoo-docx` (see `requirements.txt`), a fork of an older python-docx that installs itself as the `docx` module; tests and test fixtures must not rely on newer python-docx features such as `Document.add_comment`.
 
 ---
 

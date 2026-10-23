@@ -1273,6 +1273,13 @@ class JBGLangImprovSuggestorAI:
         if self._looks_like_corrupted_text(old):
             return {"reject": True, "reason": "corrupted_old_span"}
 
+        # Lagrumshänvisningar ("6 c §", "1 kap. 6 §", "(1997:238)") får aldrig
+        # ändras av ett språkförslag. Kontrolleras före undantagen från
+        # likhetsreglerna, så att t.ex. "c" -> "b" i "6 c §" inte godkänns som
+        # ett kort ordbyte.
+        if self._changes_legal_reference(s):
+            return {"reject": True, "reason": "legal_reference_changed"}
+
         # Likhetsreglerna jämför tecken, inte betydelse. Två väldefinierade slag
         # av korrekta omskrivningar ser olika ut men är säkra (se
         # _is_equivalent_rewrite) och undantas därför från båda reglerna.
@@ -1324,6 +1331,40 @@ class JBGLangImprovSuggestorAI:
     # ett sådant ord räknas aldrig som en säker omskrivning.
     _NEGATION_WORDS = {"inte", "ej", "icke", "aldrig", "ingen", "inget", "inga", "utan"}
     _SHORT_WORDS_RE = re.compile(r"^[A-Za-zÅÄÖåäöÉéÜü]+(?:[ -][A-Za-zÅÄÖåäöÉéÜü]+){0,2}$")
+
+    # En lagrumshänvisning: "6 §", "6 c §", "6 a–c §§", "1 kap. 6 §", eller ett
+    # SFS-nummer som "1997:238".
+    _LEGAL_REFERENCE_RE = re.compile(
+        r"(?:\d+\s*kap\.\s*)?\d+\s*[a-zåäö]?(?:\s*[–−-]\s*\d*\s*[a-zåäö]?)?\s*§§?"
+        r"|\b\d{4}:\d{1,4}\b",
+        re.IGNORECASE,
+    )
+
+    def _changes_legal_reference(self, s: SuggestedChange) -> bool:
+        """
+        True om förslaget berör en lagrumshänvisning som inte finns kvar
+        oförändrad i texten efter ändringen, eller tar bort ett "§".
+        """
+        old, new = s.old or "", s.new or ""
+        if old.count("§") > new.count("§"):
+            return True
+        element = self._get_docx_element_by_id(s.element_id) or {}
+        text = element.get("text") or ""
+        start = text.find(old)
+        if not old or start < 0:
+            return False
+        end = start + len(old)
+        result = text[:start] + new + text[end:]
+
+        def normalized(value: str) -> str:
+            return re.sub(r"\s+", " ", value.replace("−", "–")).strip()
+
+        normalized_result = normalized(result)
+        for match in self._LEGAL_REFERENCE_RE.finditer(text):
+            if match.start() < end and start < match.end():
+                if normalized(match.group(0)) not in normalized_result:
+                    return True
+        return False
 
     def _removes_final_heading_punctuation(self, s: SuggestedChange, old: str, new: str) -> bool:
         """

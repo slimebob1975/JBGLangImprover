@@ -7,10 +7,12 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
     from app.src.JBGDataRetention import loggable_text
+    from app.src.JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
     from app.src.JBGRevisionIds import max_revision_id
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
     from JBGDataRetention import loggable_text
+    from JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
     from JBGRevisionIds import max_revision_id
 
 try:
@@ -369,27 +371,10 @@ class TrackedChangesRenderer:
         if first_node.run_element is None or last_node.run_element is None:
             raise ValueError("Anchor overlaps node(s) without run_element")
 
-        first_run = first_node.run_element
-        last_run = last_node.run_element
-
-        if (
-            first_run is last_run
-            and first_node is last_node
-            and first_node.kind == "text"
-        ):
-            return self._rewrite_single_run_case(
-                paragraph=paragraph,
-                run=first_run,
-                node=first_node,
-                anchor_start=anchor_start,
-                anchor_end=anchor_end,
-                old_text=old_text,
-                new_text=new_text,
-            )
-
-        return self._rewrite_multi_run_case(
+        return self._rewrite_span(
             paragraph=paragraph,
-            overlapping_nodes=overlapping_nodes,
+            first_node=first_node,
+            last_node=last_node,
             anchor_start=anchor_start,
             anchor_end=anchor_end,
             old_text=old_text,
@@ -571,152 +556,47 @@ class TrackedChangesRenderer:
     # Single-run case
     # ------------------------------------------------------------------
 
-    def _rewrite_single_run_case(
+    def _rewrite_span(
         self,
         paragraph: etree._Element,
-        run: etree._Element,
-        node,
+        first_node,
+        last_node,
         anchor_start: int,
         anchor_end: int,
         old_text: str,
         new_text: str,
     ) -> dict:
-        if node.kind != "text":
-            raise ValueError("Single-run case currently supports only text nodes")
-
-        node_text = node.text
-        local_start = anchor_start - node.start
-        local_end = anchor_end - node.start
-
-        if local_start < 0 or local_end > len(node_text):
-            raise ValueError("Invalid local offsets in single-run case")
-
-        before_text = node_text[:local_start]
-        middle_text = node_text[local_start:local_end]
-        after_text = node_text[local_end:]
-
-        if not self._texts_match_leniently(middle_text, old_text):
+        """
+        Ändrar styckets text [anchor_start, anchor_end), oavsett om ändringen
+        ligger i en textbit, flera textbitar eller går in i en hyperlänk
+        (se JBGRunEditing). Text som inte ändras i berörda textbitar behålls,
+        med radbrytningar och tabbar.
+        """
+        plan = plan_span_edit(paragraph, first_node, last_node, anchor_start, anchor_end, new_text)
+        if not self._texts_match_leniently(plan.actual_old, old_text):
             raise ValueError(
-                f"Single-run split mismatch. Expected {old_text!r}, got {middle_text!r}"
+                f"Span text mismatch. Expected {loggable_text(old_text)}, got {loggable_text(plan.actual_old)}"
             )
 
-        insert_index = paragraph.index(run)
-        paragraph.remove(run)
+        anchor = None
+        for segment in plan.segments:
+            new_elements = []
+            inserted_wrapper = deleted_wrapper = None
+            if segment.before:
+                new_elements.append(self._clone_run_with_text(segment.first_run, segment.before))
+            if segment.old:
+                deleted_wrapper = self._make_deleted_wrapper(segment.old, source_run=segment.first_run)
+                new_elements.append(deleted_wrapper)
+            if segment.new:
+                inserted_wrapper = self._make_inserted_wrapper(segment.new, source_run=segment.first_run)
+                new_elements.append(inserted_wrapper)
+            if segment.after:
+                new_elements.append(self._clone_run_with_text(segment.last_run, segment.after))
+            replace_runs(segment, new_elements)
+            if anchor is None and (inserted_wrapper is not None or deleted_wrapper is not None):
+                anchor = self._select_comment_anchor(inserted_wrapper, deleted_wrapper)
 
-        new_elements = []
-        inserted_wrapper = None
-        deleted_wrapper = None
-
-        if before_text:
-            new_elements.append(self._clone_run_with_text(run, before_text))
-
-        if old_text:
-            deleted_wrapper = self._make_deleted_wrapper(old_text, source_run=run)
-            new_elements.append(deleted_wrapper)
-
-        if new_text:
-            inserted_wrapper = self._make_inserted_wrapper(new_text, source_run=run)
-            new_elements.append(inserted_wrapper)
-
-        if after_text:
-            new_elements.append(self._clone_run_with_text(run, after_text))
-
-        for offset, elem in enumerate(new_elements):
-            paragraph.insert(insert_index + offset, elem)
-
-        anchor_element, anchor_kind = self._select_comment_anchor(inserted_wrapper, deleted_wrapper)
-        return {
-            "anchor_kind": anchor_kind,
-            "anchor_revision_id": self._get_revision_id(anchor_element),
-        }
-
-    # ------------------------------------------------------------------
-    # Multi-run case
-    # ------------------------------------------------------------------
-
-    def _rewrite_multi_run_case(
-        self,
-        paragraph: etree._Element,
-        overlapping_nodes: list,
-        anchor_start: int,
-        anchor_end: int,
-        old_text: str,
-        new_text: str,
-    ) -> dict:
-        first_node = overlapping_nodes[0]
-        last_node = overlapping_nodes[-1]
-
-        if first_node.run_element is None or last_node.run_element is None:
-            raise ValueError("Resolved text boundary node(s) without run_element")
-
-        first_run = first_node.run_element
-        last_run = last_node.run_element
-
-        first_local_start = self._local_offset_in_run(
-            first_node,
-            anchor_start,
-        )
-        last_local_end = self._local_offset_in_run(
-            last_node,
-            anchor_end,
-        )
-
-        first_run_text = self._extract_visible_text_from_run(first_run)
-        last_run_text = self._extract_visible_text_from_run(last_run)
-
-        if first_local_start < 0 or first_local_start > len(first_run_text):
-            raise ValueError("Invalid first_local_start")
-        if last_local_end < 0 or last_local_end > len(last_run_text):
-            raise ValueError("Invalid last_local_end")
-
-        first_before = first_run_text[:first_local_start]
-        last_after = last_run_text[last_local_end:]
-
-        changed_runs = self._get_runs_between(paragraph, first_run, last_run)
-        if not changed_runs:
-            raise ValueError("Could not resolve changed run span")
-
-        actual_old = self._reconstruct_old_text_across_runs(
-            changed_runs=changed_runs,
-            first_boundary_node=first_node,
-            last_boundary_node=last_node,
-            first_local_start=first_local_start,
-            last_local_end=last_local_end,
-        )
-
-        if not self._texts_match_leniently(actual_old, old_text):
-            run_dump = [self._extract_visible_text_from_run(r) for r in changed_runs]
-            raise ValueError(
-                f"Multi-run split mismatch. Expected {old_text!r}, got {actual_old!r}. Runs={run_dump!r}"
-            )
-
-        insert_index = paragraph.index(first_run)
-
-        for run in changed_runs:
-            paragraph.remove(run)
-
-        new_elements = []
-        inserted_wrapper = None
-        deleted_wrapper = None
-
-        if first_before:
-            new_elements.append(self._clone_run_with_text(first_run, first_before))
-
-        if old_text:
-            deleted_wrapper = self._make_deleted_wrapper(old_text, source_run=first_run)
-            new_elements.append(deleted_wrapper)
-
-        if new_text:
-            inserted_wrapper = self._make_inserted_wrapper(new_text, source_run=first_run)
-            new_elements.append(inserted_wrapper)
-
-        if last_after:
-            new_elements.append(self._clone_run_with_text(last_run, last_after))
-
-        for offset, elem in enumerate(new_elements):
-            paragraph.insert(insert_index + offset, elem)
-
-        anchor_element, anchor_kind = self._select_comment_anchor(inserted_wrapper, deleted_wrapper)
+        anchor_element, anchor_kind = anchor
         return {
             "anchor_kind": anchor_kind,
             "anchor_revision_id": self._get_revision_id(anchor_element),
@@ -737,98 +617,6 @@ class TrackedChangesRenderer:
         if element is None:
             return None
         return element.get(f"{{{W_NS}}}id")
-
-    def _find_nearest_text_node_forward(self, nodes: list, start_index: int):
-        for i in range(start_index, len(nodes)):
-            if nodes[i].kind == "text":
-                return nodes[i]
-        return None
-
-    def _find_nearest_text_node_backward(self, nodes: list, start_index: int):
-        for i in range(start_index, -1, -1):
-            if nodes[i].kind == "text":
-                return nodes[i]
-        return None
-
-    def _reconstruct_old_text_across_runs(
-        self,
-        changed_runs: list[etree._Element],
-        first_boundary_node,
-        last_boundary_node,
-        first_local_start: int,
-        last_local_end: int,
-    ) -> str:
-        parts = []
-
-        for run in changed_runs:
-            run_text = self._extract_visible_text_from_run(run)
-
-            if run is first_boundary_node.run_element and run is last_boundary_node.run_element:
-                parts.append(run_text[first_local_start:last_local_end])
-            elif run is first_boundary_node.run_element:
-                parts.append(run_text[first_local_start:])
-            elif run is last_boundary_node.run_element:
-                parts.append(run_text[:last_local_end])
-            else:
-                parts.append(run_text)
-
-        return "".join(parts)
-
-    def _extract_visible_text_from_run(self, run: etree._Element) -> str:
-        parts = []
-        for child in run:
-            if child.tag == f"{{{W_NS}}}t":
-                parts.append(child.text or "")
-            elif child.tag == f"{{{W_NS}}}tab":
-                parts.append("\t")
-            elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
-                parts.append("\n")
-        return "".join(parts)
-
-    def _local_offset_in_run(self, node, global_offset: int) -> int:
-        """Translate a paragraph offset to the visible offset in one run.
-
-        A boundary node can be w:tab, w:br or w:cr, and a run can contain
-        several visible children.  Offsets relative only to node.text are
-        therefore insufficient at special-node boundaries.
-        """
-        run = node.run_element
-        if run is None:
-            raise ValueError("Cannot calculate a local offset without run_element")
-
-        if global_offset < node.start or global_offset > node.end:
-            raise ValueError("Global offset is outside the boundary node")
-
-        local_offset = 0
-        for child in run:
-            if child is node.element:
-                return local_offset + (global_offset - node.start)
-            local_offset += len(self._visible_text_from_run_child(child))
-
-        raise ValueError("Boundary node is not a child of its run")
-
-    @staticmethod
-    def _visible_text_from_run_child(child: etree._Element) -> str:
-        if child.tag == f"{{{W_NS}}}t":
-            return child.text or ""
-        if child.tag == f"{{{W_NS}}}tab":
-            return "\t"
-        if child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
-            return "\n"
-        return ""
-
-    def _get_runs_between(self, paragraph: etree._Element, first_run: etree._Element, last_run: etree._Element) -> list[etree._Element]:
-        runs = paragraph.findall(f"./{{{W_NS}}}r")
-        if first_run not in runs or last_run not in runs:
-            return []
-
-        start_idx = runs.index(first_run)
-        end_idx = runs.index(last_run)
-
-        if start_idx > end_idx:
-            return []
-
-        return runs[start_idx:end_idx + 1]
 
     def _ensure_track_revisions_enabled(self) -> None:
         tree = self.package.read_settings_tree(create_if_missing=True)
@@ -855,9 +643,7 @@ class TrackedChangesRenderer:
         if rpr is not None:
             new_run.append(etree.fromstring(etree.tostring(rpr)))
 
-        t = etree.SubElement(new_run, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        append_visible_text(new_run, text)
         return new_run
 
     def _make_deleted_wrapper(self, text: str, source_run: Optional[etree._Element] = None) -> etree._Element:
@@ -873,9 +659,7 @@ class TrackedChangesRenderer:
             if rpr is not None:
                 run.append(etree.fromstring(etree.tostring(rpr)))
 
-        del_text = etree.SubElement(run, f"{{{W_NS}}}delText")
-        del_text.set(f"{{{XML_NS}}}space", "preserve")
-        del_text.text = text
+        append_visible_text(run, text, text_tag="delText")
         return wrapper
 
     def _make_inserted_wrapper(self, text: str, source_run: Optional[etree._Element] = None) -> etree._Element:
@@ -891,7 +675,5 @@ class TrackedChangesRenderer:
             if rpr is not None:
                 run.append(etree.fromstring(etree.tostring(rpr)))
 
-        t = etree.SubElement(run, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        append_visible_text(run, text)
         return wrapper

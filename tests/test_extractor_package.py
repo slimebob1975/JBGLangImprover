@@ -71,8 +71,19 @@ def build_pending_changes_document(path):
     p2._p.append(_xml('<w:del w:id="8" w:author="Anna" w:date="2026-01-01T00:00:00Z">'
                       '<w:r><w:delText xml:space="preserve">kortfattat </w:delText></w:r></w:del>'))
     p2.add_run("hur genomförandet av kontrollerna gick till.")
-    document.add_comment(p1.runs, text="Annas kommentar", author="Anna", initials="A")
     document.save(path)
+
+    # Annas kommentar läggs till med projektets egen kommentarsmodul, så att
+    # testet fungerar med både bayoo-docx (projektets beroende) och python-docx.
+    from app.src.JBGCommentsRenderer import CommentsRenderer
+    from app.src.JBGDocxPackage import DocxPackage
+    logger = _quiet_logger("anna-comment")
+    with DocxPackage(str(path), logger) as package:
+        tree = package.read_document_tree()
+        first_paragraph = tree.getroot().find(f"{W}body").find(f"{W}p")
+        CommentsRenderer(package, logger, author="Anna").add_paragraph_comment(first_paragraph, "Annas kommentar")
+        package.write_document_tree(tree)
+        package.save(str(path))
 
 
 class PendingInsertionTests(_Base):

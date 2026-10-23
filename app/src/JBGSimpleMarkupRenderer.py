@@ -6,9 +6,11 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
     from app.src.JBGDataRetention import loggable_text
+    from app.src.JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
     from JBGDataRetention import loggable_text
+    from JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
 
 try:
     from app.src.JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
@@ -357,24 +359,10 @@ class SimpleMarkupRenderer:
         if first_node.run_element is None or last_node.run_element is None:
             raise ValueError("Anchor overlaps node(s) without run_element")
 
-        first_run = first_node.run_element
-        last_run = last_node.run_element
-
-        if first_run is last_run:
-            self._rewrite_single_run_case(
-                paragraph=paragraph,
-                run=first_run,
-                node=first_node,
-                anchor_start=anchor_start,
-                anchor_end=anchor_end,
-                old_text=old_text,
-                new_text=new_text,
-            )
-            return
-
-        self._rewrite_multi_run_case(
+        self._rewrite_span(
             paragraph=paragraph,
-            overlapping_nodes=overlapping_nodes,
+            first_node=first_node,
+            last_node=last_node,
             anchor_start=anchor_start,
             anchor_end=anchor_end,
             old_text=old_text,
@@ -385,183 +373,52 @@ class SimpleMarkupRenderer:
     # Boundary guard
     # ------------------------------------------------------------------
 
-    def _fix_boundary_spacing(self, before: str, new: str, after: str) -> tuple[str, str, str]:
-        """
-        Förhindrar enkla sammanstötningar mellan before/new/after.
-        Mycket konservativ: lägger bara till whitespace där det är uppenbart rätt.
-        """
-
-        def is_word_char(ch: str) -> bool:
-            return ch.isalnum()
-
-        if before and new:
-            if is_word_char(before[-1]) and is_word_char(new[0]):
-                new = " " + new
-
-            if before.endswith(".") and not new.startswith(" "):
-                if new and new[0].isalpha():
-                    new = " " + new
-
-        if new and after:
-            if is_word_char(new[-1]) and is_word_char(after[0]):
-                new = new + " "
-
-            if new.endswith(".") and after and after[0].isalpha():
-                new = new + " "
-
-        return before, new, after
-
     # ------------------------------------------------------------------
     # Single-run case
     # ------------------------------------------------------------------
 
-    def _rewrite_single_run_case(
+    def _rewrite_span(
         self,
         paragraph: etree._Element,
-        run: etree._Element,
-        node,
+        first_node,
+        last_node,
         anchor_start: int,
         anchor_end: int,
         old_text: str,
         new_text: str,
     ) -> None:
-        if node.kind != "text":
-            raise ValueError("Single-run case currently supports only text nodes")
-
-        node_text = node.text
-        local_start = anchor_start - node.start
-        local_end = anchor_end - node.start
-
-        if local_start < 0 or local_end > len(node_text):
-            raise ValueError("Invalid local offsets in single-run case")
-
-        before_text = node_text[:local_start]
-        middle_text = node_text[local_start:local_end]
-        after_text = node_text[local_end:]
-
-        if not self._texts_match_leniently(middle_text, old_text):
+        """
+        Markerar ändringen av styckets text [anchor_start, anchor_end):
+        borttagen text rödstruken, ny text grön. Fungerar för en eller flera
+        textbitar och för ändringar som går in i en hyperlänk (se
+        JBGRunEditing). Text som inte ändras behålls, med radbrytningar och tabbar.
+        """
+        plan = plan_span_edit(paragraph, first_node, last_node, anchor_start, anchor_end, new_text)
+        if not self._texts_match_leniently(plan.actual_old, old_text):
             raise ValueError(
-                f"Single-run split mismatch. Expected {old_text!r}, got {middle_text!r}"
+                f"Span text mismatch. Expected {loggable_text(old_text)}, got {loggable_text(plan.actual_old)}"
             )
 
-        insert_index = paragraph.index(run)
-        paragraph.remove(run)
-
-        new_elements = []
-
-        if before_text:
-            new_elements.append(self._clone_run_with_text(run, before_text))
-
-        if old_text:
-            new_elements.append(self._clone_run_with_deleted_markup(run, old_text))
-
-        if old_text and new_text:
-            sep = self._make_separator_text(old_text, new_text)
-            if sep:
-                new_elements.append(self._clone_run_with_neutral_separator(run, sep))
-
-        if new_text:
-            new_elements.append(self._clone_run_with_inserted_markup(run, new_text))
-
-        if new_text and after_text:
-            sep = self._make_separator_text(new_text, after_text)
-            if sep:
-                new_elements.append(self._clone_run_with_neutral_separator(run, sep))
-
-        if after_text:
-            new_elements.append(self._clone_run_with_text(run, after_text))
-
-        for offset, elem in enumerate(new_elements):
-            paragraph.insert(insert_index + offset, elem)
-
-    # ------------------------------------------------------------------
-    # Multi-run case
-    # ------------------------------------------------------------------
-
-    def _rewrite_multi_run_case(
-        self,
-        paragraph: etree._Element,
-        overlapping_nodes: list,
-        anchor_start: int,
-        anchor_end: int,
-        old_text: str,
-        new_text: str,
-    ) -> None:
-        first_text_node = self._find_nearest_text_node_forward(overlapping_nodes, 0)
-        last_text_node = self._find_nearest_text_node_backward(overlapping_nodes, len(overlapping_nodes) - 1)
-
-        if first_text_node is None or last_text_node is None:
-            raise ValueError("Multi-run case could not find text boundary nodes")
-
-        first_node = first_text_node
-        last_node = last_text_node
-
-        if first_node.run_element is None or last_node.run_element is None:
-            raise ValueError("Resolved text boundary node(s) without run_element")
-
-        first_run = first_node.run_element
-        last_run = last_node.run_element
-
-        first_local_start = anchor_start - first_node.start
-        last_local_end = anchor_end - last_node.start
-
-        if first_local_start < 0 or first_local_start > len(first_node.text):
-            raise ValueError("Invalid first_local_start")
-        if last_local_end < 0 or last_local_end > len(last_node.text):
-            raise ValueError("Invalid last_local_end")
-
-        first_before = first_node.text[:first_local_start]
-        last_after = last_node.text[last_local_end:]
-
-        changed_runs = self._get_runs_between(paragraph, first_run, last_run)
-        if not changed_runs:
-            raise ValueError("Could not resolve changed run span")
-
-        actual_old = self._reconstruct_old_text_across_runs(
-            changed_runs=changed_runs,
-            first_boundary_node=first_node,
-            last_boundary_node=last_node,
-            first_local_start=first_local_start,
-            last_local_end=last_local_end,
-        )
-
-        if not self._texts_match_leniently(actual_old, old_text):
-            run_dump = [self._extract_visible_text_from_run(r) for r in changed_runs]
-            raise ValueError(
-                f"Multi-run split mismatch. Expected {old_text!r}, got {actual_old!r}. Runs={run_dump!r}"
-            )
-
-        insert_index = paragraph.index(first_run)
-
-        for run in changed_runs:
-            paragraph.remove(run)
-
-        new_elements = []
-
-        if first_before:
-            new_elements.append(self._clone_run_with_text(first_run, first_before))
-
-        if old_text:
-            new_elements.append(self._clone_run_with_deleted_markup(first_run, old_text))
-
-        if old_text and new_text:
-            sep = self._make_separator_text(old_text, new_text)
-            if sep:
-                new_elements.append(self._clone_run_with_neutral_separator(first_run, sep))
-
-        if new_text:
-            new_elements.append(self._clone_run_with_inserted_markup(first_run, new_text))
-
-        if new_text and last_after:
-            sep = self._make_separator_text(new_text, last_after)
-            if sep:
-                new_elements.append(self._clone_run_with_neutral_separator(last_run, sep))
-
-        if last_after:
-            new_elements.append(self._clone_run_with_text(last_run, last_after))
-
-        for offset, elem in enumerate(new_elements):
-            paragraph.insert(insert_index + offset, elem)
+        for segment in plan.segments:
+            new_elements = []
+            source = segment.first_run
+            if segment.before:
+                new_elements.append(self._clone_run_with_text(source, segment.before))
+            if segment.old:
+                new_elements.append(self._clone_run_with_deleted_markup(source, segment.old))
+            if segment.old and segment.new:
+                separator = self._make_separator_text(segment.old, segment.new)
+                if separator:
+                    new_elements.append(self._clone_run_with_neutral_separator(source, separator))
+            if segment.new:
+                new_elements.append(self._clone_run_with_inserted_markup(source, segment.new))
+            if segment.new and segment.after:
+                separator = self._make_separator_text(segment.new, segment.after)
+                if separator:
+                    new_elements.append(self._clone_run_with_neutral_separator(segment.last_run, separator))
+            if segment.after:
+                new_elements.append(self._clone_run_with_text(segment.last_run, segment.after))
+            replace_runs(segment, new_elements)
 
     # ------------------------------------------------------------------
     # Footnote helpers
@@ -742,71 +599,6 @@ class SimpleMarkupRenderer:
 
         return cells[col_index - 1]
 
-    def _find_nearest_text_node_forward(self, nodes: list, start_index: int):
-        for i in range(start_index, len(nodes)):
-            if nodes[i].kind == "text":
-                return nodes[i]
-        return None
-
-    def _find_nearest_text_node_backward(self, nodes: list, start_index: int):
-        for i in range(start_index, -1, -1):
-            if nodes[i].kind == "text":
-                return nodes[i]
-        return None
-
-    def _reconstruct_old_text_across_runs(
-        self,
-        changed_runs: list[etree._Element],
-        first_boundary_node,
-        last_boundary_node,
-        first_local_start: int,
-        last_local_end: int,
-    ) -> str:
-        parts = []
-
-        for run in changed_runs:
-            run_text = self._extract_visible_text_from_run(run)
-
-            if run is first_boundary_node.run_element and run is last_boundary_node.run_element:
-                parts.append(run_text[first_local_start:last_local_end])
-            elif run is first_boundary_node.run_element:
-                parts.append(run_text[first_local_start:])
-            elif run is last_boundary_node.run_element:
-                parts.append(run_text[:last_local_end])
-            else:
-                parts.append(run_text)
-
-        return "".join(parts)
-
-    def _extract_visible_text_from_run(self, run: etree._Element) -> str:
-        parts = []
-        for child in run:
-            if child.tag == f"{{{W_NS}}}t":
-                parts.append(child.text or "")
-            elif child.tag == f"{{{W_NS}}}tab":
-                parts.append("\t")
-            elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
-                parts.append("\n")
-        return "".join(parts)
-
-    def _get_runs_between(
-        self,
-        paragraph: etree._Element,
-        first_run: etree._Element,
-        last_run: etree._Element,
-    ) -> list[etree._Element]:
-        runs = paragraph.findall(f"./{{{W_NS}}}r")
-        if first_run not in runs or last_run not in runs:
-            return []
-
-        start_idx = runs.index(first_run)
-        end_idx = runs.index(last_run)
-
-        if start_idx > end_idx:
-            return []
-
-        return runs[start_idx:end_idx + 1]
-
     # ------------------------------------------------------------------
     # Run factories
     # ------------------------------------------------------------------
@@ -818,9 +610,7 @@ class SimpleMarkupRenderer:
         if rpr is not None:
             new_run.append(etree.fromstring(etree.tostring(rpr)))
 
-        t = etree.SubElement(new_run, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        append_visible_text(new_run, text)
         return new_run
 
     def _clone_run_with_deleted_markup(self, source_run: etree._Element, text: str) -> etree._Element:
@@ -836,9 +626,7 @@ class SimpleMarkupRenderer:
 
         new_run.append(rpr)
 
-        t = etree.SubElement(new_run, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        append_visible_text(new_run, text)
         return new_run
 
     def _clone_run_with_inserted_markup(self, source_run: etree._Element, text: str) -> etree._Element:
@@ -851,9 +639,7 @@ class SimpleMarkupRenderer:
 
         new_run.append(rpr)
 
-        t = etree.SubElement(new_run, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        append_visible_text(new_run, text)
         return new_run
 
     def _copy_or_create_rpr(self, source_run: etree._Element) -> etree._Element:
@@ -917,7 +703,5 @@ class SimpleMarkupRenderer:
 
             new_run.append(clean_rpr)
 
-        t = etree.SubElement(new_run, f"{{{W_NS}}}t")
-        t.set(f"{{{XML_NS}}}space", "preserve")
-        t.text = text
+        append_visible_text(new_run, text)
         return new_run

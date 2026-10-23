@@ -1,6 +1,7 @@
 import os
 import json
 import docx
+from docx.table import _Cell
 import sys
 import posixpath
 import re
@@ -172,8 +173,13 @@ class DocumentStructureExtractor:
             if ti in excluded_tables:
                 continue
             cell_sequence = 0
-            for ri, row in enumerate(table.rows, start=1):
-                for ci, cell in enumerate(row.cells, start=1):
+            # Cellerna räknas som de verkliga cellerna i XML (w:tc), precis som
+            # renderarna gör. python-docx row.cells ger en cell per rutnäts-
+            # kolumn, så en sammanfogad cell skulle annars komma med flera gånger
+            # och numreringen efter den skilja sig från renderarnas.
+            for ri, tr in enumerate(table._tbl.tr_lst, start=1):
+                for ci, tc in enumerate(tr.tc_lst, start=1):
+                    cell = _Cell(tc, table)
                     # A cell may contain several paragraphs.  Expose each
                     # paragraph separately so the model can never return an
                     # anchor that crosses an OOXML paragraph boundary.
