@@ -10,6 +10,10 @@
 
 ## Planned improvments
 
+### Testing
+
+- [ ] Run all Python tests every time the start script runs (`python -m unittest discover -s tests`), and stop with a clear message if any test fails, so the service never starts on broken code. Notes: the local start script (`start_local_service.ps1`) is not tracked in the repository, so it needs to be added (without secrets) or documented in the README; the tests take about 10–40 seconds and must run inside the virtual environment (otherwise the local `openai` folder shadows the package, see test run 2026-10-23). Consider the same step in both GitHub workflows before deployment, so a failing test also stops a deploy to dev or prod
+
 ### Data handling and retention
 
 - [ ] Check where the deployed service stores files (e.g. persistent `/home` storage on Azure App Service), and set `JBG_KEEP_DEBUG_DATA=1` only in the dev environment
