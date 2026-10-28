@@ -24,6 +24,16 @@
 - [ ] In the long run, possibly make "Spåra ändringar och infogade kommentarer" the only result mode (it is the default since this patch). The GUI could then be simplified from the two radio buttons to two checkboxes: "Spåra ändringar" and "Infogade kommentarer" (the latter maps to the existing `include_motivations` option, today hidden and always on). Before removing simple markup: check whether anyone depends on it, and decide what the comments checkbox means without tracked changes (simple markup has no comments today)
 - [x] Show "Inloggad som: …" at the top of the page, like the sister service: `/me` returns the name from Azure App Service authentication (header `X-MS-CLIENT-PRINCIPAL-NAME`, URL-decoded, max 200 characters) and `script.js` shows it under the subtitle. Without a login (e.g. locally) the line reads "Inloggad som: okänd användare", like the sister service; if the call fails, the line stays hidden. Display only: the name is never used for authorization
 
+### Future: multi-language support
+
+- [ ] Support more languages than Swedish through one language profile per language, chosen explicitly (not by translating on the fly). Three layers:
+  - Interface: texts in `index.html`, `script.js` and server status messages move to translation files per language, with a language selector
+  - Output in the document: comment labels, comment authors, "Om klarspråkningen" and the LIX comment use the same translation files
+  - Analysis: policy files per language (`policy/sv/`, `policy/en/`), written from that language's own plain-language guidance, not translated from the Swedish ones; Swedish-specific code rules move to a language-rules module per language (negation words, month names, abbreviations, placeholders such as "ÅÅÅÅ", legal references such as "§"/SFS, "Rubrik" in style names, readability metric: LIX for Swedish, e.g. Flesch reading ease for English)
+  - Interface language and document language are separate choices; the document language can be suggested from Word's `w:lang`. For languages without a profile, an on-the-fly fallback ("generic plain-language review") could be offered, clearly marked as lower quality
+  - Effort: strings to translation files about one session (and makes the code ready for more languages); language rules about one session; a good policy per language is domain work by someone who knows that language's plain-language practice
+  - Start only when a second language is actually needed; English would be the natural first profile
+
 ### EPIC: Global (document-level) language improvement layer
 
 All current proposals are local (one element, one `old` -> `new`). Add an optional
