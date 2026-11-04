@@ -20,6 +20,12 @@
 
 ### GUI
 
+- [ ] Word-level tracked changes as a post-processing step (decided over a separate "clean version for Word's Compare" mode, since it keeps the motivations and improves the default mode for everyone). After rendering, each of the service's own deletion+insertion pairs is refined with a token diff (`JBGTokenDiffEngine`): unchanged words become plain text again and only the changed words stay as small tracked deletions/insertions, so the user sees exactly what changed, as with Word's Compare. Requirements:
+  - Nothing may be lost: a block is replaced only if "Godkänn alla" and "Avvisa alla" give exactly the same text (including line breaks and tabs) before and after the refinement; otherwise the original block is kept. This invariant is checked per block at run time and in the tests
+  - Only the service's own changes are refined (filter on our author); other authors' tracked changes are never touched
+  - The comment with the motivation must still cover the whole refined change (comment range markers around the first and last refined part)
+  - Formatting of the original runs is kept; revision ids continue after the highest existing id (`JBGRevisionIds`)
+  - Can be turned off with a setting, so the current block mode stays available
 - [X] Tracked changes ("Spåra ändringar och infogade kommentarer") is the default result mode in the form and in `/upload/`; the form defaults are pinned by `tests/test_gui_defaults.py`
 - [ ] High proority: the GUI need to expose what kind of error that happens during the process, e.g. the API key is not accepted or the API quota has ended, and so on and so forth
 - [ ] In the long run, possibly make "Spåra ändringar och infogade kommentarer" the only result mode (it is the default since this patch). The GUI could then be simplified from the two radio buttons to two checkboxes: "Spåra ändringar" and "Infogade kommentarer" (the latter maps to the existing `include_motivations` option, today hidden and always on). Before removing simple markup: check whether anyone depends on it, and decide what the comments checkbox means without tracked changes (simple markup has no comments today)
