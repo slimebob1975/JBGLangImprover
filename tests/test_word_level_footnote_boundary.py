@@ -80,7 +80,7 @@ class FootnoteBoundaryTests(unittest.TestCase):
                         self.assertEqual(len(results), 1)
                         self.assertTrue(results[0].applied, results[0].message)
                         if enabled:
-                            self.assertEqual(results[0].word_level_status, 'span_fallback')
+                            self.assertEqual(results[0].word_level_status, 'word_level')
                         comments = CommentsRenderer(package, logger).apply_comments_for_results(results)
                         self.assertEqual(len(comments), 1)
                         self.assertTrue(comments[0].applied, comments[0].message)
@@ -111,7 +111,7 @@ class FootnoteBoundaryTests(unittest.TestCase):
                     self.assertEqual(position_in_view(False), original_offset)
                     self.assertEqual(position_in_view(True), len('Vi granskar relevanta underlag för beslut.'))
                     self.assertEqual(len(paragraph.xpath('./w:ins', namespaces=NS)), 2)
-                    self.assertEqual(len(paragraph.xpath('./w:del', namespaces=NS)), 2)
+                    self.assertEqual(len(paragraph.xpath('./w:del', namespaces=NS)), 1 if enabled else 2)
                     for marker in ('commentRangeStart', 'commentRangeEnd', 'commentReference'):
                         self.assertEqual(len(paragraph.xpath('.//w:' + marker, namespaces=NS)), 1)
                     # Reference is never inside a revision wrapper.

@@ -631,6 +631,22 @@ class TrackedChangesRenderer:
         fallback_reason = None
         if self.word_level_changes:
             if len(plan.segments) != 1:
+                # A stable footnote split can still contain independent,
+                # lossless token-level changes on either side. Validate EVERY
+                # piece before modifying XML; never rewrite through the
+                # reference or through nested containers such as hyperlinks.
+                prepared = self._prepare_immutable_boundary_word_edits(paragraph, plan.segments)
+                if prepared is not None:
+                    first_result = last_result = None
+                    for piece, exact in prepared:
+                        item = self._rewrite_segmented_run(piece, exact)
+                        if first_result is None:
+                            first_result = item
+                        last_result = item
+                    first_result["anchor_end_kind"] = last_result["anchor_end_kind"]
+                    first_result["anchor_end_revision_id"] = last_result["anchor_end_revision_id"]
+                    first_result["word_level_status"] = "word_level"
+                    return first_result
                 fallback_reason = "multiple_edit_segments"
             else:
                 fallback_reason = self._word_diff_safety_reason(old_text, new_text, diff_segments)
@@ -642,6 +658,17 @@ class TrackedChangesRenderer:
                         fallback_reason = None
                     else:
                         fallback_reason = f"exact_{exact_reason}"
+                if fallback_reason == "diff_no_common_text":
+                    # A single-token replacement without any equal tokens is
+                    # already represented by the legacy span renderer as one
+                    # deletion and one insertion.  Reclassifying it as word
+                    # level would inflate the proposal metric without making
+                    # Word's revision any more precise.  Keep the established
+                    # renderer and distinguish this visually equivalent case
+                    # from genuinely unresolved no-common-token proposals.
+                    segment = plan.segments[0]
+                    if self._no_common_equivalent_span(paragraph, segment, old_text, new_text, diff_segments):
+                        fallback_reason = "diff_no_common_text_equivalent_span"
                 if fallback_reason is None:
                     segment = plan.segments[0]
                     fallback_reason = self._word_run_safety_reason(paragraph, segment, old_text, new_text)
@@ -722,6 +749,39 @@ class TrackedChangesRenderer:
             result["word_level_status"] = "span_fallback"
             result["word_level_fallback_reason"] = fallback_reason
         return result
+
+    @classmethod
+    def _prepare_immutable_boundary_word_edits(cls, paragraph, segments):
+        """Preflight a proven standalone-footnote split, without XML writes.
+
+        The existing protected-reference splitter is the only source of such
+        segments. Each changed side must consist of one direct plain run,
+        be exactly lossless and have its own unchanged token anchor. A side
+        without changes is kept verbatim. We intentionally do not support
+        hyperlinks, multiple runs or formatting changes here.
+        """
+        if len(segments) != 2 or any(s.container is not paragraph for s in segments):
+            return None
+        left, right = segments
+        if (len(left.runs) != 1 or len(right.runs) != 1
+                or left.last_run.getnext() is None
+                or left.last_run.getnext().tag != f"{{{W_NS}}}r"
+                or left.last_run.getnext().find(f"{{{W_NS}}}footnoteReference") is None
+                or left.last_run.getnext().getnext() is not right.first_run):
+            return None
+        prepared = []
+        for segment in segments:
+            if segment.old == segment.new:
+                continue
+            exact = TokenDiffEngine().build_diff(segment.old, segment.new, lossless=True)
+            if cls._word_diff_safety_reason(segment.old, segment.new, exact) is not None:
+                return None
+            if cls._word_run_safety_reason(paragraph, segment, segment.old, segment.new) is not None:
+                return None
+            prepared.append((segment, exact))
+        # A comment needs at least one anchor, and both sides have already
+        # been checked before the first run is replaced.
+        return prepared or None
 
     @staticmethod
     def _split_at_stable_footnote_reference(segment):
@@ -931,6 +991,24 @@ class TrackedChangesRenderer:
                 source != segment.before + old_text + segment.after):
             return "non_exact_run_text"
         return None
+
+    @staticmethod
+    def _no_common_equivalent_span(paragraph, segment, old_text, new_text, segments):
+        """Identify safe replacements whose existing span revision is optimal.
+
+        This is *diagnostics only*: never use this predicate to bypass OOXML
+        safety or silently count a visually unchanged revision as improvement.
+        """
+        import re
+        if not segments or [item.kind for item in segments if item.text] != ["delete", "insert"]:
+            return False
+        # Only one lexical word on each side; longer rewrites are not claimed
+        # to have optimal granularity merely because their tokens differ.
+        word = r"[^\W_]+(?:-[^\W_]+)*"
+        if not re.fullmatch(word, old_text, re.UNICODE) or not re.fullmatch(word, new_text, re.UNICODE):
+            return False
+        return TrackedChangesRenderer._word_run_safety_reason(
+            paragraph, segment, old_text, new_text) is None
 
     @staticmethod
     def _word_diff_safety_reason(old_text, new_text, segments):
