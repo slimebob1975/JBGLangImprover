@@ -283,6 +283,28 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
     blocks.append(_table_title("Förslag"))
     blocks.append(_suggestions_table(summary))
     diagnostics = summary.get("word_level_diagnostics")
+    fallback_labels = {
+        "diff_text_mismatch": "Normaliserad diff ändrade originaltexten",
+        "diff_no_common_text": "Inga oförändrade textdelar",
+        "diff_unchanged": "Identisk gammal och ny text",
+        "diff_empty": "Tom diff",
+        "diff_no_changes": "Inga ändringar i diffen",
+        "diff_unsupported_operation": "Okänd difftyp",
+        "exact_diff_empty": "Texttrogen diff kunde inte byggas",
+        "exact_diff_text_mismatch": "Texttrogen diff kunde inte återställa texten",
+        "exact_diff_no_common_text": "Texttrogen diff saknar oförändrade delar",
+        "exact_diff_unsupported_operation": "Okänd difftyp i texttrogen diff",
+        "multiple_edit_segments": "Flera redigeringsbehållare",
+        "complex_run_content": "Komplext innehåll i textruns",  # äldre körningar
+        "complex_run_tabs_or_breaks": "Tabbar eller radbrytningar i textruns",
+        "complex_run_fields_or_objects": "Fält, referenser eller objekt i textruns",
+        "complex_run_other_elements": "Andra Word-element i textruns",
+        "complex_run_without_text": "Textrun utan vanlig text",
+        "mixed_run_formatting": "Blandad formatering",
+        "non_direct_runs": "Runs i annan behållare",
+        "interleaved_markup": "Markering mellan textruns",
+        "non_exact_run_text": "Text och runs stämmer inte exakt",
+    }
     if diagnostics and diagnostics.get("enabled"):
         blocks.append(_table_title("Experimentell ordnivårendering"))
         rows = [
@@ -291,7 +313,20 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             ["Fallback till spann", _fmt_int(diagnostics.get("span_fallback", 0))],
         ]
         for reason, count in sorted((diagnostics.get("fallback_reasons") or {}).items()):
-            rows.append([f"Fallback: {reason}", _fmt_int(count)])
+            label = fallback_labels.get(reason)
+            display = f"{label} ({reason})" if label else reason
+            rows.append([f"Fallback: {display}", _fmt_int(count)])
+        skipped = diagnostics.get("unsafe_span_skipped", 0)
+        if skipped:
+            rows.append(["Ej införda förslag: skydd för Word-element", _fmt_int(skipped)])
+            element_labels = {
+                "footnoteReference": "Fotnotsreferens", "endnoteReference": "Slutnotsreferens",
+                "fldChar": "Fältmarkör", "instrText": "Fältinstruktion",
+                "drawing": "Ritobjekt", "pict": "Bild", "object": "Inbäddat objekt",
+            }
+            for tag, count in sorted((diagnostics.get("unsafe_span_elements") or {}).items()):
+                display = element_labels.get(tag, "Word-element")
+                rows.append([f"Skyddat: {display} (w:{tag})", _fmt_int(count)])
         blocks.append(AboutBlock("table", rows=rows, numeric_columns=(1,)))
     if summary.get("global_review"):
         blocks.extend(_global_blocks(summary))

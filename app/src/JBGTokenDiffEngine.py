@@ -33,11 +33,24 @@ class TokenDiffEngine:
         self.logger = logger
         self.normalize_nbsp = normalize_nbsp
 
-    def build_diff(self, old_text: str, new_text: str) -> List[DiffSegment]:
-        old_tokens = self.tokenize(old_text)
-        new_tokens = self.tokenize(new_text)
+    # Exact tokenization is only used by the optional word-level renderer.
+    # Unlike the legacy tokenizer it retains NBSP and all other whitespace.
+    EXACT_TOKEN_PATTERN = re.compile(
+        r"\r\n|[\n\r\t]|[^\S\r\n\t]+|\d+(?:[.,]\d+)*%?|[A-Za-zÀ-ÖØ-öø-ÿ_]+|\w+|[^\w\s]",
+        re.UNICODE,
+    )
 
-        matcher = SequenceMatcher(a=old_tokens, b=new_tokens)
+    def build_diff(self, old_text: str, new_text: str, *, lossless: bool = False) -> List[DiffSegment]:
+        if lossless:
+            old_tokens = self.EXACT_TOKEN_PATTERN.findall(old_text or "")
+            new_tokens = self.EXACT_TOKEN_PATTERN.findall(new_text or "")
+            if "".join(old_tokens) != (old_text or "") or "".join(new_tokens) != (new_text or ""):
+                return []  # Fail closed on any unrecognized source character.
+        else:
+            old_tokens = self.tokenize(old_text)
+            new_tokens = self.tokenize(new_text)
+
+        matcher = SequenceMatcher(a=old_tokens, b=new_tokens, autojunk=not lossless)
         segments: List[DiffSegment] = []
 
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():

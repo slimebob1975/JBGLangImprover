@@ -341,11 +341,24 @@ class JBGLanguageImprover:
                 outcomes = Counter(r.word_level_status for r in successful)
                 reasons = Counter(r.word_level_fallback_reason for r in successful
                                   if r.word_level_status == "span_fallback")
+                # This counter is separate from span fallback: an unsafe
+                # non-text run is deliberately NOT rewritten or commented on.
+                unsafe = Counter()
+                for result in self.render_results:
+                    if not result.applied and result.message.startswith("unsafe_span_run_content:"):
+                        for tag in result.message.partition(":")[2].split(","):
+                            if tag:
+                                unsafe[tag] += 1
                 self.run_summary.word_level_diagnostics = {
                     "enabled": True,
                     "word_level": outcomes["word_level"],
                     "span_fallback": outcomes["span_fallback"],
                     "fallback_reasons": dict(sorted(reasons.items())),
+                    "unsafe_span_skipped": sum(
+                        not r.applied and r.message.startswith("unsafe_span_run_content:")
+                        for r in self.render_results
+                    ),
+                    "unsafe_span_elements": dict(sorted(unsafe.items())),
                 }
 
             counts = self.run_summary.local_suggestions

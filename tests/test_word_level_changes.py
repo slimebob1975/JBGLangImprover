@@ -125,7 +125,34 @@ class WordLevelChangesTests(unittest.TestCase):
         root, _ = self.render(old, new, True)
         self.assertEqual(self.text_from_revision(root, False), old)
         self.assertEqual(self.text_from_revision(root, True), new)
+        self.assertEqual(len(root.xpath('.//w:del', namespaces=NS)), 0)
+        self.assertEqual(len(root.xpath('.//w:ins', namespaces=NS)), 1)
+
+    def test_exact_diff_handles_nbsp_and_multiple_replacements(self):
+        old = 'Myndigheten har en omfattande granskning\u00a0och sedan ett beslut.'
+        new = 'Myndigheten har en grundlig granskning\u00a0och därefter ett beslut.'
+        root, comments = self.render(old, new, True, same_style_runs=True)
+        self.assertEqual(self.text_from_revision(root, False), old)
+        self.assertEqual(self.text_from_revision(root, True), new)
+        self.assertGreaterEqual(len(root.xpath('.//w:del', namespaces=NS)), 2)
+        self.assertEqual(len(comments.xpath('.//w:comment', namespaces=NS)), 1)
+
+    def test_exact_diff_preserves_other_unicode_spaces(self):
+        old = 'Uppgifterna gäller 12\u202f345 personer i dag.'
+        new = 'Uppgifterna gäller 12\u202f345 personer just i dag.'
+        root, _ = self.render(old, new, True)
+        self.assertEqual(self.text_from_revision(root, False), old)
+        self.assertEqual(self.text_from_revision(root, True), new)
+        self.assertEqual(len(root.xpath('.//w:del', namespaces=NS)), 0)
+        self.assertEqual(len(root.xpath('.//w:ins', namespaces=NS)), 1)
+
+    def test_no_common_tokens_still_falls_back_safely(self):
+        old, new = 'Hej.', 'Adjö!'
+        root, _ = self.render(old, new, True)
+        self.assertEqual(self.text_from_revision(root, False), old)
+        self.assertEqual(self.text_from_revision(root, True), new)
         self.assertEqual(len(root.xpath('.//w:del', namespaces=NS)), 1)
+        self.assertEqual(len(root.xpath('.//w:ins', namespaces=NS)), 1)
 
 class MultiRunEligibilityTests(unittest.TestCase):
     """Conservative eligibility checks independent of the OOXML editor."""
@@ -171,4 +198,4 @@ class MultiRunEligibilityTests(unittest.TestCase):
         paragraph, segment, old = self.paragraph_and_segment(['Vi gör ', 'granskning.'])
         etree.SubElement(paragraph[0], f'{{{W_NS}}}tab')
         self.assertEqual(TrackedChangesRenderer._word_run_safety_reason(
-            paragraph, segment, old, segment.new), 'complex_run_content')
+            paragraph, segment, old, segment.new), 'complex_run_tabs_or_breaks')

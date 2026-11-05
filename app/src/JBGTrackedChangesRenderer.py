@@ -9,11 +9,13 @@ try:
     from app.src.JBGDataRetention import loggable_text
     from app.src.JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
     from app.src.JBGRevisionIds import max_revision_id
+    from app.src.JBGTokenDiffEngine import TokenDiffEngine
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
     from JBGDataRetention import loggable_text
     from JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
     from JBGRevisionIds import max_revision_id
+    from JBGTokenDiffEngine import TokenDiffEngine
 
 try:
     from app.src.JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
@@ -603,22 +605,39 @@ class TrackedChangesRenderer:
                 f"Span text mismatch. Expected {loggable_text(old_text)}, got {loggable_text(plan.actual_old)}"
             )
 
-        # Stay on the original span path unless the diff and the complete
-        # underlying run range are losslessly representable. The v2 extension
-        # supports multiple *identically formatted* direct text runs.
+        # A span replacement recreates runs from visible text. It cannot
+        # recreate a footnote reference, a field, a drawing or other opaque
+        # OOXML child. Reject the WHOLE proposal before editing any segment,
+        # rather than silently dropping a reference from the document. This
+        # protection applies to both word-level and legacy span mode.
+        unsafe = self._unsafe_span_run_elements(plan.segments)
+        if unsafe:
+            raise ValueError("unsafe_span_run_content:" + ",".join(unsafe))
+
+        # The original span renderer remains the only fallback. Try a second,
+        # strictly lossless diff only when the planner's normalized diff cannot
+        # reproduce the input byte-for-byte (notably NBSP and Unicode spaces).
         fallback_reason = None
         if self.word_level_changes:
             if len(plan.segments) != 1:
                 fallback_reason = "multiple_edit_segments"
-            elif not self._safe_word_segments(old_text, new_text, diff_segments):
-                fallback_reason = "non_lossless_or_unsuitable_diff"
             else:
-                segment = plan.segments[0]
-                fallback_reason = self._word_run_safety_reason(paragraph, segment, old_text, new_text)
+                fallback_reason = self._word_diff_safety_reason(old_text, new_text, diff_segments)
+                if fallback_reason == "diff_text_mismatch":
+                    exact_segments = TokenDiffEngine().build_diff(old_text, new_text, lossless=True)
+                    exact_reason = self._word_diff_safety_reason(old_text, new_text, exact_segments)
+                    if exact_reason is None:
+                        diff_segments = exact_segments
+                        fallback_reason = None
+                    else:
+                        fallback_reason = f"exact_{exact_reason}"
                 if fallback_reason is None:
-                    result = self._rewrite_segmented_run(segment, diff_segments)
-                    result["word_level_status"] = "word_level"
-                    return result
+                    segment = plan.segments[0]
+                    fallback_reason = self._word_run_safety_reason(paragraph, segment, old_text, new_text)
+                    if fallback_reason is None:
+                        result = self._rewrite_segmented_run(segment, diff_segments)
+                        result["word_level_status"] = "word_level"
+                        return result
 
         anchor = None
         for segment in plan.segments:
@@ -649,6 +668,27 @@ class TrackedChangesRenderer:
         return result
 
     @staticmethod
+    def _unsafe_span_run_elements(segments):
+        """Name non-text run children the span writer would silently discard.
+
+        Plain tabs and line breaks are reproducible; a break with attributes
+        (for example a page break) is not. Run properties are cloned.
+        Never include document text or field contents in the diagnostic.
+        """
+        allowed = {f"{{{W_NS}}}rPr", f"{{{W_NS}}}t", f"{{{W_NS}}}tab",
+                   f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}
+        unsafe = set()
+        for segment in segments:
+            for run in segment.runs:
+                for child in run:
+                    if child.tag not in allowed or (
+                        child.tag in {f"{{{W_NS}}}tab", f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}
+                        and (child.attrib or len(child))
+                    ):
+                        unsafe.add(etree.QName(child).localname)
+        return tuple(sorted(unsafe))
+
+    @staticmethod
     def _word_run_safety_reason(paragraph, segment, old_text, new_text):
         """Return a reason instead of rewriting OOXML we cannot preserve.
 
@@ -669,10 +709,21 @@ class TrackedChangesRenderer:
         runs = children[start:end + 1]
         if any(run.tag != f"{{{W_NS}}}r" for run in runs):
             return "interleaved_markup"
+        # Classify disallowed run children without changing eligibility. All
+        # categories below still use the existing span fallback. This makes it
+        # possible to prioritize future changes using real document evidence.
         allowed = {f"{{{W_NS}}}rPr", f"{{{W_NS}}}t"}
-        if any(not any(ch.tag == f"{{{W_NS}}}t" for ch in run) or
-               any(ch.tag not in allowed for ch in run) for run in runs):
-            return "complex_run_content"
+        run_children = [ch for run in runs for ch in run if ch.tag not in allowed]
+        if run_children:
+            tags = {etree.QName(ch).localname for ch in run_children}
+            if tags & {"tab", "br", "cr"}:
+                return "complex_run_tabs_or_breaks"
+            if tags & {"fldChar", "instrText", "drawing", "pict", "object",
+                        "footnoteReference", "endnoteReference", "sym"}:
+                return "complex_run_fields_or_objects"
+            return "complex_run_other_elements"
+        if any(not any(ch.tag == f"{{{W_NS}}}t" for ch in run) for run in runs):
+            return "complex_run_without_text"
         properties = [etree.tostring(run.find(f"{{{W_NS}}}rPr"))
                       if run.find(f"{{{W_NS}}}rPr") is not None else None
                       for run in runs]
@@ -686,16 +737,27 @@ class TrackedChangesRenderer:
         return None
 
     @staticmethod
-    def _safe_word_segments(old_text, new_text, segments):
-        if not segments or old_text == new_text:
-            return False
+    def _word_diff_safety_reason(old_text, new_text, segments):
+        """A stable, specific reason for rejecting a token-level edit."""
+        if old_text == new_text:
+            return "diff_unchanged"
+        if not segments:
+            return "diff_empty"
         if any(seg.kind not in {"equal", "insert", "delete"} for seg in segments):
-            return False
-        # TokenDiffEngine may normalize NBSP: never rewrite normalized text.
-        return ("".join(seg.text for seg in segments if seg.kind != "insert") == old_text
-                and "".join(seg.text for seg in segments if seg.kind != "delete") == new_text
-                and any(seg.kind == "equal" and seg.text for seg in segments)
-                and any(seg.kind != "equal" and seg.text for seg in segments))
+            return "diff_unsupported_operation"
+        if ("".join(seg.text for seg in segments if seg.kind != "insert") != old_text
+                or "".join(seg.text for seg in segments if seg.kind != "delete") != new_text):
+            return "diff_text_mismatch"
+        if not any(seg.kind != "equal" and seg.text for seg in segments):
+            return "diff_no_changes"
+        if not any(seg.kind == "equal" and seg.text for seg in segments):
+            return "diff_no_common_text"
+        return None
+
+    @staticmethod
+    def _safe_word_segments(old_text, new_text, segments):
+        # Backwards-compatible eligibility API used by earlier test cases.
+        return TrackedChangesRenderer._word_diff_safety_reason(old_text, new_text, segments) is None
 
     def _rewrite_segmented_run(self, segment, diff_segments):
         source_run = segment.first_run
