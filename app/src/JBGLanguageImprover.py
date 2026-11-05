@@ -75,6 +75,7 @@ class JBGLanguageImprover:
         prompt_customized=None,
         compute_readability=True,
         global_review=False,
+        word_level_changes=False,
         **kwargs,
     ):
         self.input_path = input_path
@@ -91,6 +92,7 @@ class JBGLanguageImprover:
         self.include_about_section = bool(include_about_section)
         self.compute_readability = bool(compute_readability)
         self.global_review = bool(global_review)
+        self.word_level_changes = bool(word_level_changes)
         self.extra_kwargs = kwargs
 
         if self.docx_mode not in {"simple", "tracked"}:
@@ -326,11 +328,25 @@ class JBGLanguageImprover:
 
         with DocxPackage(self.input_path, self.logger) as pkg:
             if self.docx_mode == "tracked":
-                renderer = TrackedChangesRenderer(pkg, self.logger)
+                renderer = TrackedChangesRenderer(pkg, self.logger, word_level_changes=self.word_level_changes)
             else:
                 renderer = SimpleMarkupRenderer(pkg, self.logger)
 
             self.render_results = renderer.apply_plans(self.change_plans)
+            if self.docx_mode == "tracked" and self.word_level_changes:
+                # Counts are based on successfully rendered suggestions, not
+                # the number of OOXML revisions created for each suggestion.
+                from collections import Counter
+                successful = [r for r in self.render_results if r.applied]
+                outcomes = Counter(r.word_level_status for r in successful)
+                reasons = Counter(r.word_level_fallback_reason for r in successful
+                                  if r.word_level_status == "span_fallback")
+                self.run_summary.word_level_diagnostics = {
+                    "enabled": True,
+                    "word_level": outcomes["word_level"],
+                    "span_fallback": outcomes["span_fallback"],
+                    "fallback_reasons": dict(sorted(reasons.items())),
+                }
 
             counts = self.run_summary.local_suggestions
             counts.applied = len([r for r in self.render_results if r.applied])
