@@ -127,6 +127,7 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     const includeAboutSection = document.getElementById("includeAboutSection").checked;
     const computeLix = document.getElementById("computeLix").checked;
     const globalReview = document.getElementById("globalReview").checked;
+    const wordLevelChanges = document.getElementById("wordLevelChanges").checked;
 
     if (!file || !apiKey) {
         updateStatus("❌ Du måste välja en fil och ange din API-nyckel.", "status-error");
@@ -147,6 +148,7 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     formData.append("include_about_section", includeAboutSection);
     formData.append("compute_lix", computeLix);
     formData.append("global_review", globalReview);
+    formData.append("word_level_changes", wordLevelChanges);
 
     try {
         const res = await fetch("/upload/", {
@@ -244,7 +246,7 @@ function updateStatus(message, className) {
 // klar eller har misslyckats. En ny körning kräver att sidan laddas om
 // (se tipset om Ctrl-Shift-R i sidfoten).
 function lockUI() {
-    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
+    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "wordLevelChanges", "button"];
     ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = true;

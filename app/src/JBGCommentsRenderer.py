@@ -108,7 +108,21 @@ class CommentsRenderer:
                         f"in {anchor_part_name}"
                     )
 
-                comment_id = self._attach_comment_to_anchor(anchor_element, motivation)
+                end_kind = getattr(render_result, "anchor_end_kind", None)
+                end_id = getattr(render_result, "anchor_end_revision_id", None)
+                end_element = anchor_element
+                if end_kind and end_id:
+                    tag = "ins" if end_kind == "ins" else "del"
+                    end_matches = host_tree.getroot().xpath(
+                        f".//w:{tag}[@w:id='{end_id}']",
+                        namespaces={"w": W_NS},
+                    )
+                    if not end_matches:
+                        raise ValueError("Could not locate final revision of segmented change")
+                    end_element = end_matches[0]
+                comment_id = self._attach_comment_to_anchor(
+                    anchor_element, motivation, end_element=end_element
+                )
 
                 # Skriv alltid comments.xml
                 self.package.write_comments_tree(self.comments_tree)
@@ -200,14 +214,21 @@ class CommentsRenderer:
         self,
         anchor_element: etree._Element,
         motivation: str,
+        end_element: Optional[etree._Element] = None,
     ) -> int:
+        end_element = end_element if end_element is not None else anchor_element
         paragraph = self._find_ancestor_paragraph(anchor_element)
         if paragraph is None:
             raise ValueError("Anchor element is not inside a paragraph")
 
         parent = anchor_element.getparent()
+        if end_element.getparent() is not parent or self._find_ancestor_paragraph(end_element) is not paragraph:
+            raise ValueError("Segmented comment endpoints must share a paragraph and parent")
         if parent is None:
             raise ValueError("Anchor element has no parent")
+
+        if parent.index(end_element) < parent.index(anchor_element):
+            raise ValueError("Segmented comment endpoints are reversed")
 
         comment_id = self._create_comment(motivation)
 
@@ -221,10 +242,11 @@ class CommentsRenderer:
         ref = etree.SubElement(ref_run, f"{{{W_NS}}}commentReference")
         ref.set(f"{{{W_NS}}}id", str(comment_id))
 
-        anchor_index = parent.index(anchor_element)
-        parent.insert(anchor_index, start)
-        parent.insert(anchor_index + 2, end)
-        parent.insert(anchor_index + 3, ref_run)
+        first_index = parent.index(anchor_element)
+        last_index = parent.index(end_element)
+        parent.insert(last_index + 1, end)
+        parent.insert(last_index + 2, ref_run)
+        parent.insert(first_index, start)
 
         return comment_id
 

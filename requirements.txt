@@ -10,3 +10,4 @@ python-multipart
 uvicorn[standard]
 thefuzz
 opentelemetry-instrumentation-fastapi
+pytest

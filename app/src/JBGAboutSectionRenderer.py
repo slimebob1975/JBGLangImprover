@@ -282,6 +282,17 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
     blocks.append(_usage_table(summary.get("usage") or {}))
     blocks.append(_table_title("Förslag"))
     blocks.append(_suggestions_table(summary))
+    diagnostics = summary.get("word_level_diagnostics")
+    if diagnostics and diagnostics.get("enabled"):
+        blocks.append(_table_title("Experimentell ordnivårendering"))
+        rows = [
+            ["Resultat", "Antal förslag"],
+            ["Ordnivå", _fmt_int(diagnostics.get("word_level", 0))],
+            ["Fallback till spann", _fmt_int(diagnostics.get("span_fallback", 0))],
+        ]
+        for reason, count in sorted((diagnostics.get("fallback_reasons") or {}).items()):
+            rows.append([f"Fallback: {reason}", _fmt_int(count)])
+        blocks.append(AboutBlock("table", rows=rows, numeric_columns=(1,)))
     if summary.get("global_review"):
         blocks.extend(_global_blocks(summary))
     if summary.get("readability"):

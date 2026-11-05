@@ -40,7 +40,7 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertFalse(self.checked("simpleMarking"))
 
     def test_optional_features_are_off_by_default(self):
-        for element_id in ("globalReview", "computeLix", "includeAboutSection"):
+        for element_id in ("globalReview", "computeLix", "includeAboutSection", "wordLevelChanges"):
             with self.subTest(element_id=element_id):
                 self.assertFalse(self.checked(element_id))
 
@@ -55,6 +55,7 @@ class GuiDefaultsTests(unittest.TestCase):
         defaults = {name: p.default.default for name, p in inspect.signature(main.upload_file).parameters.items()
                     if hasattr(p.default, "default")}
         self.assertEqual(defaults["docx_mode"], "tracked")
+        self.assertFalse(defaults["word_level_changes"])
         self.assertEqual((defaults["global_review"], defaults["compute_lix"], defaults["include_about_section"]),
                          (False, False, False))
 

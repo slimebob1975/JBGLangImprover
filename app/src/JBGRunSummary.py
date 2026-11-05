@@ -45,6 +45,7 @@ class RunSummary:
     local_suggestions: SuggestionCounts = field(default_factory=SuggestionCounts)
     usage: dict[str, Any] = field(default_factory=dict)
     readability: Optional[dict[str, Any]] = None
+    word_level_diagnostics: Optional[dict[str, Any]] = None
     about_section: Optional[dict[str, Any]] = None
     # Global granskning: parts, raw, accepted, rejected, by_category, errors,
     # comments_applied. None när den globala granskningen inte kördes.

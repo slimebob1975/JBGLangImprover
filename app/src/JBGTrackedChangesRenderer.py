@@ -47,6 +47,10 @@ class RenderResult:
     anchor_part_name: Optional[str] = None
     anchor_kind: Optional[str] = None   # "ins" / "del"
     anchor_revision_id: Optional[str] = None
+    anchor_end_kind: Optional[str] = None
+    anchor_end_revision_id: Optional[str] = None
+    word_level_status: Optional[str] = None
+    word_level_fallback_reason: Optional[str] = None
 
 
 class TrackedChangesRenderer:
@@ -57,10 +61,11 @@ class TrackedChangesRenderer:
         DOCUMENT_ELEMENT_TYPES | FOOTNOTE_ELEMENT_TYPES | STORY_ELEMENT_TYPES
     )
 
-    def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst"):
+    def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst", word_level_changes: bool = False):
         self.package = package
         self.logger = logger
         self.author = author
+        self.word_level_changes = bool(word_level_changes)
         self.document_adapter = DocumentPartAdapter(package, logger)
         self.story_adapter = HeaderFooterPartAdapter(package, logger)
 
@@ -110,6 +115,10 @@ class TrackedChangesRenderer:
                     anchor_part_name="word/document.xml",
                     anchor_kind=anchor_info["anchor_kind"],
                     anchor_revision_id=anchor_info["anchor_revision_id"],
+                    word_level_status=anchor_info.get("word_level_status"),
+                    word_level_fallback_reason=anchor_info.get("word_level_fallback_reason"),
+                    anchor_end_kind=anchor_info.get("anchor_end_kind"),
+                    anchor_end_revision_id=anchor_info.get("anchor_end_revision_id"),
                 )
 
             if plan.target.element_type in self.STORY_ELEMENT_TYPES:
@@ -122,6 +131,10 @@ class TrackedChangesRenderer:
                     anchor_part_name=plan.target.part_name,
                     anchor_kind=anchor_info["anchor_kind"],
                     anchor_revision_id=anchor_info["anchor_revision_id"],
+                    word_level_status=anchor_info.get("word_level_status"),
+                    word_level_fallback_reason=anchor_info.get("word_level_fallback_reason"),
+                    anchor_end_kind=anchor_info.get("anchor_end_kind"),
+                    anchor_end_revision_id=anchor_info.get("anchor_end_revision_id"),
                 )
 
             if plan.target.element_type in self.FOOTNOTE_ELEMENT_TYPES:
@@ -152,6 +165,10 @@ class TrackedChangesRenderer:
                     anchor_part_name="word/footnotes.xml",
                     anchor_kind=anchor_info["anchor_kind"],
                     anchor_revision_id=anchor_info["anchor_revision_id"],
+                    word_level_status=anchor_info.get("word_level_status"),
+                    word_level_fallback_reason=anchor_info.get("word_level_fallback_reason"),
+                    anchor_end_kind=anchor_info.get("anchor_end_kind"),
+                    anchor_end_revision_id=anchor_info.get("anchor_end_revision_id"),
                 )
 
             return RenderResult(plan=plan, applied=False, message="Unsupported element type")
@@ -236,6 +253,7 @@ class TrackedChangesRenderer:
             anchor_end=plan.anchor.end,
             old_text=plan.old_text,
             new_text=plan.new_text,
+            diff_segments=plan.diff_segments,
         )
 
     def _apply_story_plan(self, plan: ChangePlan) -> dict:
@@ -249,6 +267,7 @@ class TrackedChangesRenderer:
             anchor_end=plan.anchor.end,
             old_text=plan.old_text,
             new_text=plan.new_text,
+            diff_segments=plan.diff_segments,
         )
 
     def _apply_table_cell_plan(self, plan: ChangePlan) -> dict:
@@ -266,6 +285,7 @@ class TrackedChangesRenderer:
                 anchor_end=plan.anchor.end,
                 old_text=plan.old_text,
                 new_text=plan.new_text,
+                diff_segments=plan.diff_segments,
             )
         except Exception:
             pass
@@ -300,6 +320,7 @@ class TrackedChangesRenderer:
                 anchor_end=anchor["end"],
                 old_text=plan.old_text,
                 new_text=plan.new_text,
+                diff_segments=plan.diff_segments,
             )
 
         raise ValueError(f"No matching paragraph found in table cell {plan.target.element_id}")
@@ -343,6 +364,7 @@ class TrackedChangesRenderer:
             anchor_end=anchor["end"],
             old_text=plan.old_text,
             new_text=plan.new_text,
+            diff_segments=plan.diff_segments,
         )
 
     # ------------------------------------------------------------------
@@ -358,6 +380,7 @@ class TrackedChangesRenderer:
         anchor_end: int,
         old_text: str,
         new_text: str,
+        diff_segments=None,
     ) -> dict:
         matched = visible_text[anchor_start:anchor_end]
         if not self._texts_match_leniently(matched, old_text):
@@ -379,6 +402,7 @@ class TrackedChangesRenderer:
             anchor_end=anchor_end,
             old_text=old_text,
             new_text=new_text,
+            diff_segments=diff_segments,
         )
 
     # ------------------------------------------------------------------
@@ -565,6 +589,7 @@ class TrackedChangesRenderer:
         anchor_end: int,
         old_text: str,
         new_text: str,
+        diff_segments=None,
     ) -> dict:
         """
         Ändrar styckets text [anchor_start, anchor_end), oavsett om ändringen
@@ -577,6 +602,23 @@ class TrackedChangesRenderer:
             raise ValueError(
                 f"Span text mismatch. Expected {loggable_text(old_text)}, got {loggable_text(plan.actual_old)}"
             )
+
+        # Stay on the original span path unless the diff and the complete
+        # underlying run range are losslessly representable. The v2 extension
+        # supports multiple *identically formatted* direct text runs.
+        fallback_reason = None
+        if self.word_level_changes:
+            if len(plan.segments) != 1:
+                fallback_reason = "multiple_edit_segments"
+            elif not self._safe_word_segments(old_text, new_text, diff_segments):
+                fallback_reason = "non_lossless_or_unsuitable_diff"
+            else:
+                segment = plan.segments[0]
+                fallback_reason = self._word_run_safety_reason(paragraph, segment, old_text, new_text)
+                if fallback_reason is None:
+                    result = self._rewrite_segmented_run(segment, diff_segments)
+                    result["word_level_status"] = "word_level"
+                    return result
 
         anchor = None
         for segment in plan.segments:
@@ -597,9 +639,94 @@ class TrackedChangesRenderer:
                 anchor = self._select_comment_anchor(inserted_wrapper, deleted_wrapper)
 
         anchor_element, anchor_kind = anchor
-        return {
+        result = {
             "anchor_kind": anchor_kind,
             "anchor_revision_id": self._get_revision_id(anchor_element),
+        }
+        if self.word_level_changes:
+            result["word_level_status"] = "span_fallback"
+            result["word_level_fallback_reason"] = fallback_reason
+        return result
+
+    @staticmethod
+    def _word_run_safety_reason(paragraph, segment, old_text, new_text):
+        """Return a reason instead of rewriting OOXML we cannot preserve.
+
+        No hyperlinks, fields, drawings, bookmarks, comments, tab/linebreak
+        elements or mixed formatting. Those use the established span renderer.
+        """
+        first, last = segment.first_run, segment.last_run
+        if (first is None or last is None or first.getparent() is not paragraph
+                or last.getparent() is not paragraph):
+            return "non_direct_runs"
+        children = list(paragraph)
+        try:
+            start, end = children.index(first), children.index(last)
+        except ValueError:
+            return "run_not_in_paragraph"
+        if end < start:
+            return "run_order"
+        runs = children[start:end + 1]
+        if any(run.tag != f"{{{W_NS}}}r" for run in runs):
+            return "interleaved_markup"
+        allowed = {f"{{{W_NS}}}rPr", f"{{{W_NS}}}t"}
+        if any(not any(ch.tag == f"{{{W_NS}}}t" for ch in run) or
+               any(ch.tag not in allowed for ch in run) for run in runs):
+            return "complex_run_content"
+        properties = [etree.tostring(run.find(f"{{{W_NS}}}rPr"))
+                      if run.find(f"{{{W_NS}}}rPr") is not None else None
+                      for run in runs]
+        if any(value != properties[0] for value in properties[1:]):
+            return "mixed_run_formatting"
+        source = "".join("".join(ch.text or "" for ch in run
+                                 if ch.tag == f"{{{W_NS}}}t") for run in runs)
+        if (segment.old != old_text or segment.new != new_text or
+                source != segment.before + old_text + segment.after):
+            return "non_exact_run_text"
+        return None
+
+    @staticmethod
+    def _safe_word_segments(old_text, new_text, segments):
+        if not segments or old_text == new_text:
+            return False
+        if any(seg.kind not in {"equal", "insert", "delete"} for seg in segments):
+            return False
+        # TokenDiffEngine may normalize NBSP: never rewrite normalized text.
+        return ("".join(seg.text for seg in segments if seg.kind != "insert") == old_text
+                and "".join(seg.text for seg in segments if seg.kind != "delete") == new_text
+                and any(seg.kind == "equal" and seg.text for seg in segments)
+                and any(seg.kind != "equal" and seg.text for seg in segments))
+
+    def _rewrite_segmented_run(self, segment, diff_segments):
+        source_run = segment.first_run
+        new_elements = []
+        if segment.before:
+            new_elements.append(self._clone_run_with_text(source_run, segment.before))
+        revisions = []
+        for diff in diff_segments:
+            if not diff.text:
+                continue
+            if diff.kind == "equal":
+                new_elements.append(self._clone_run_with_text(source_run, diff.text))
+            elif diff.kind == "delete":
+                wrapper = self._make_deleted_wrapper(diff.text, source_run=source_run)
+                new_elements.append(wrapper)
+                revisions.append((wrapper, "del"))
+            else:
+                wrapper = self._make_inserted_wrapper(diff.text, source_run=source_run)
+                new_elements.append(wrapper)
+                revisions.append((wrapper, "ins"))
+        if segment.after:
+            new_elements.append(self._clone_run_with_text(source_run, segment.after))
+        # Build all XML nodes before altering the original paragraph.
+        replace_runs(segment, new_elements)
+        first, first_kind = revisions[0]
+        last, last_kind = revisions[-1]
+        return {
+            "anchor_kind": first_kind,
+            "anchor_revision_id": self._get_revision_id(first),
+            "anchor_end_kind": last_kind,
+            "anchor_end_revision_id": self._get_revision_id(last),
         }
 
     def _select_comment_anchor(
