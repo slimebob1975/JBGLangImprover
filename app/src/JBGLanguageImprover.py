@@ -303,6 +303,53 @@ class JBGLanguageImprover:
             logger=self.logger,
         )
 
+        # Optional diagnostic middleware. Always pass ORIGINAL proposals to
+        # the planner: no rendering, counting or motivation changes in shadow mode.
+        if os.environ.get("JBG_SUGGESTION_SPLIT_SHADOW") == "1":
+            try:
+                try:
+                    from app.src.JBGSuggestionSplitShadow import SuggestionSplitShadow
+                except ModuleNotFoundError:
+                    from JBGSuggestionSplitShadow import SuggestionSplitShadow
+                shadow = SuggestionSplitShadow().analyze(self.validated_suggestions, self.structure)
+                self.logger.info(
+                    "Suggestion split shadow: %s/%s original proposals are candidates",
+                    shadow["split_candidates"], shadow["original_proposals"],
+                )
+                if self.save_intermediate_json:
+                    path = os.path.splitext(self.input_path)[0] + "_suggestion_split_shadow.json"
+                    with open(path, "w", encoding="utf-8") as handle:
+                        json.dump(shadow, handle, ensure_ascii=False, indent=2)
+                    self.logger.info("Saved suggestion split shadow report: %s", path)
+            except Exception as ex:
+                self.logger.warning("Suggestion split shadow analysis skipped: %s", ex)
+
+        # Optional diagnostic probe: render *only* split candidates in fresh,
+        # disposable packages. The real planner still receives original proposals.
+        # This deliberately does not enable splitting in delivered DOCX files.
+        if (os.environ.get("JBG_SUGGESTION_SPLIT_DRY_RUN") == "1"
+                and self.docx_mode == "tracked" and self.word_level_changes):
+            try:
+                try:
+                    from app.src.JBGSuggestionSplitDryRun import SuggestionSplitDryRun
+                except ModuleNotFoundError:
+                    from JBGSuggestionSplitDryRun import SuggestionSplitDryRun
+                dry_run = SuggestionSplitDryRun().analyze(
+                    self.validated_suggestions, self.structure, self.input_path, self.logger
+                )
+                self.logger.info(
+                    "Suggestion split dry-run: %s candidate proposals, %s promoted (isolated)",
+                    dry_run["probed_proposals"],
+                    dry_run["candidate_outcomes"]["promoted_to_word_level"],
+                )
+                if self.save_intermediate_json:
+                    path = os.path.splitext(self.input_path)[0] + "_suggestion_split_dry_run.json"
+                    with open(path, "w", encoding="utf-8") as handle:
+                        json.dump(dry_run, handle, ensure_ascii=False, indent=2)
+                    self.logger.info("Saved suggestion split dry-run report: %s", path)
+            except Exception as ex:
+                self.logger.warning("Suggestion split dry-run skipped: %s", ex)
+
         plans = planner.build_plans(self.validated_suggestions)
         self.run_summary.local_suggestions.planned = len(plans)
 

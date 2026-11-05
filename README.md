@@ -303,3 +303,22 @@ Model output varies between runs of the same document, so judge a change over se
 ## Known limitations and plans
 
 Open issues and planned improvements are tracked in `BACKLOG.md`, for example text inside content controls (not yet read), proposals rejected as too different from the original (dates, synonyms), and a possible simplification of the result options.
+
+### Experimentell torrkörning av uppdelade AI-förslag (avstängd som standard)
+
+Med `JBG_SUGGESTION_SPLIT_DRY_RUN=1`, spårade ändringar och aktiverad
+ordnivårendering jämför programmet varje säker uppdelningskandidat med sitt
+ursprungliga förslag. Testerna körs **isolerat** mot tillfälliga kopior av
+originalets DOCX-paket. Inga provändringar sparas och den ordinarie
+Word-renderingen får fortfarande exakt de ursprungliga förslagen.
+
+Om `save_intermediate_json` är aktiverat sparas
+`<originalnamn>_suggestion_split_dry_run.json` vid originalfilen. Rapporten
+redovisar `already_word_level`, `promoted_to_word_level`,
+`still_span_fallback` och `unsafe_or_unrenderable` per **ursprungligt** förslag.
+Torrkörningen kan vara långsammare eftersom varje kandidat provrenderas två
+gånger. Den visar isolerad teknisk renderbarhet, inte att gruppkommentarer,
+överlappande förslag eller en fullständig accept/reject-runda är verifierade.
+Stäng av genom att ta bort miljövariabeln. För att avlägsna funktionen helt,
+ta bort `app/src/JBGSuggestionSplitDryRun.py` och dess enda anrop i
+`JBGLanguageImprover._build_change_plans`.

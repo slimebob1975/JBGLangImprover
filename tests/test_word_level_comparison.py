@@ -31,6 +31,10 @@ CASES = (
      "Vi gör en grundlig granskning och sedan fattar vi beslut.", "same", "word_level", None),
     ("mixed_format_runs", "Vi gör en omfattande granskning och därefter fattar vi beslut.",
      "Vi gör en grundlig granskning och sedan fattar vi beslut.", "mixed", "span_fallback", "mixed_run_formatting"),
+    ("mixed_format_safe_boundary", "Vi gör en omfattande granskning och därefter fattar vi beslut.",
+     "Vi gör en grundlig granskning och sedan fattar vi beslut.", "mixed_safe", "word_level", None),
+    ("mixed_format_boundary_changed", "Vi gör en omfattande granskning och därefter fattar vi beslut.",
+     "Vi gör en grundlig utredning och sedan fattar vi beslut.", "mixed", "span_fallback", "mixed_run_formatting"),
     ("tab_in_run", "Vi gör en omfattande granskning\tinnan beslut.",
      "Vi gör en grundlig granskning\tinnan beslut.", "single", "span_fallback", "complex_run_tabs_or_breaks"),
     ("nb_space", "Vi granskar 1\u00a0234 ärenden och fattar beslut.",
@@ -65,16 +69,17 @@ class DeterministicWordLevelComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             counts = {False: {"ins": 0, "del": 0}, True: {"ins": 0, "del": 0}}
+            proposal_counts = {"word_level": 0, "span_fallback": 0}
             for name, old, new, structure_kind, expected_status, expected_reason in CASES:
                 with self.subTest(case=name):
                     source = tmp / f"{name}.docx"
                     document = Document()
                     p = document.add_paragraph()
-                    if structure_kind in {"same", "mixed"}:
-                        cut = old.index(" granskning")
+                    if structure_kind in {"same", "mixed", "mixed_safe"}:
+                        cut = old.index(" och därefter") if structure_kind == "mixed_safe" else old.index(" granskning")
                         p.add_run(old[:cut])
                         run = p.add_run(old[cut:])
-                        if structure_kind == "mixed":
+                        if structure_kind in {"mixed", "mixed_safe"}:
                             run.bold = True
                     else:
                         p.add_run(old)
@@ -114,7 +119,12 @@ class DeterministicWordLevelComparisonTests(unittest.TestCase):
                         self.assertEqual(results[0].word_level_status, expected_status if enabled else None)
                         if enabled:
                             self.assertEqual(results[0].word_level_fallback_reason, expected_reason)
-            # A/B outcome is checked using the same inputs, not unrelated live AI runs.
+                            proposal_counts[results[0].word_level_status] += 1
+            # Proposal-level metric: exact same frozen suggestions for both renderers.
+            # We aim for 80% word-level among APPLIED proposals over time, not
+            # 80% of words or characters. This corpus is a guardrail, not an
+            # estimate of performance on real reports.
+            self.assertEqual(proposal_counts, {"word_level": 5, "span_fallback": 4})
             self.assertGreater(counts[True]["ins"] + counts[True]["del"],
                                counts[False]["ins"] + counts[False]["del"])
 

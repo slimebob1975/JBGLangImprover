@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -7,13 +8,13 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
     from app.src.JBGDataRetention import loggable_text
-    from app.src.JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
+    from app.src.JBGRunEditing import SpanSegment, append_visible_text, plan_span_edit, replace_runs
     from app.src.JBGRevisionIds import max_revision_id
     from app.src.JBGTokenDiffEngine import TokenDiffEngine
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
     from JBGDataRetention import loggable_text
-    from JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
+    from JBGRunEditing import SpanSegment, append_visible_text, plan_span_edit, replace_runs
     from JBGRevisionIds import max_revision_id
     from JBGTokenDiffEngine import TokenDiffEngine
 
@@ -612,7 +613,17 @@ class TrackedChangesRenderer:
         # protection applies to both word-level and legacy span mode.
         unsafe = self._unsafe_span_run_elements(plan.segments)
         if unsafe:
-            raise ValueError("unsafe_span_run_content:" + ",".join(unsafe))
+            # A standalone footnote-reference run can act as an immutable
+            # boundary only if an unchanged, unique 16-character context
+            # straddles its position in BOTH original and proposed text.
+            # Otherwise continue to reject the entire proposal (v5 policy).
+            if unsafe == ("footnoteReference",) and len(plan.segments) == 1:
+                split = self._split_at_stable_footnote_reference(plan.segments[0])
+                if split is not None:
+                    plan.segments = split
+                    unsafe = self._unsafe_span_run_elements(plan.segments)
+            if unsafe:
+                raise ValueError("unsafe_span_run_content:" + ",".join(unsafe))
 
         # The original span renderer remains the only fallback. Try a second,
         # strictly lossless diff only when the planner's normalized diff cannot
@@ -634,13 +645,47 @@ class TrackedChangesRenderer:
                 if fallback_reason is None:
                     segment = plan.segments[0]
                     fallback_reason = self._word_run_safety_reason(paragraph, segment, old_text, new_text)
+                    if fallback_reason == "mixed_run_formatting":
+                        # Only cross a formatting boundary when an unchanged,
+                        # unique text window pins that boundary in both views.
+                        # Each revised run then retains its own run properties.
+                        pieces = self._stable_formatted_run_pieces(segment)
+                        if pieces is not None:
+                            prepared = []
+                            for piece in pieces:
+                                if piece.old == piece.new:
+                                    continue
+                                exact = TokenDiffEngine().build_diff(piece.old, piece.new, lossless=True)
+                                if (not exact or any(d.kind not in {"equal", "insert", "delete"}
+                                                     for d in exact)
+                                        or "".join(d.text for d in exact if d.kind != "insert") != piece.old
+                                        or "".join(d.text for d in exact if d.kind != "delete") != piece.new):
+                                    prepared = None
+                                    break
+                                prepared.append((piece, exact))
+                            if prepared:
+                                first_result = last_result = None
+                                for piece, exact in prepared:
+                                    item = self._rewrite_segmented_run(piece, exact)
+                                    if first_result is None:
+                                        first_result = item
+                                    last_result = item
+                                first_result["anchor_end_kind"] = last_result["anchor_end_kind"]
+                                first_result["anchor_end_revision_id"] = last_result["anchor_end_revision_id"]
+                                first_result["word_level_status"] = "word_level"
+                                return first_result
                     if fallback_reason is None:
                         result = self._rewrite_segmented_run(segment, diff_segments)
                         result["word_level_status"] = "word_level"
                         return result
 
         anchor = None
+        last_anchor = None
         for segment in plan.segments:
+            if segment.old == segment.new:
+                # An unchanged side of a protected reference stays byte-for-
+                # byte untouched, including all formatting and bookmark data.
+                continue
             new_elements = []
             inserted_wrapper = deleted_wrapper = None
             if segment.before:
@@ -654,18 +699,169 @@ class TrackedChangesRenderer:
             if segment.after:
                 new_elements.append(self._clone_run_with_text(segment.last_run, segment.after))
             replace_runs(segment, new_elements)
-            if anchor is None and (inserted_wrapper is not None or deleted_wrapper is not None):
-                anchor = self._select_comment_anchor(inserted_wrapper, deleted_wrapper)
+            if inserted_wrapper is not None or deleted_wrapper is not None:
+                current_anchor = self._select_comment_anchor(inserted_wrapper, deleted_wrapper)
+                if anchor is None:
+                    anchor = current_anchor
+                last_anchor = current_anchor
 
+        if anchor is None:
+            raise ValueError("No revision produced by span replacement")
         anchor_element, anchor_kind = anchor
         result = {
             "anchor_kind": anchor_kind,
             "anchor_revision_id": self._get_revision_id(anchor_element),
         }
+        # For a protected boundary, comment anchors must cover both sides
+        # if both contain edits. The preserved footnote remains between them.
+        if len(plan.segments) > 1 and last_anchor is not None:
+            last_element, last_kind = last_anchor
+            result["anchor_end_kind"] = last_kind
+            result["anchor_end_revision_id"] = self._get_revision_id(last_element)
         if self.word_level_changes:
             result["word_level_status"] = "span_fallback"
             result["word_level_fallback_reason"] = fallback_reason
         return result
+
+    @staticmethod
+    def _split_at_stable_footnote_reference(segment):
+        """Plan two text edits around one untouched standalone footnote run.
+
+        Require a unique 16-character equal context crossing the exact
+        reference boundary. This deliberately refuses cases where AI rewrote
+        the phrase next to the reference or where placement is ambiguous.
+        No XML is changed until the caller has completed all safety checks.
+        """
+        reference_tag = f"{{{W_NS}}}footnoteReference"
+        allowed_text = {f"{{{W_NS}}}rPr", f"{{{W_NS}}}t"}
+        run_list = segment.runs
+        if len(run_list) < 3 or segment.container.tag != f"{{{W_NS}}}p":
+            return None
+        reference_positions = []
+        for index, run in enumerate(run_list):
+            children = [child for child in run if child.tag != f"{{{W_NS}}}rPr"]
+            if len(children) == 1 and children[0].tag == reference_tag:
+                if not children[0].get(f"{{{W_NS}}}id"):
+                    return None
+                reference_positions.append(index)
+            elif any(child.tag not in allowed_text for child in run):
+                return None
+        if len(reference_positions) != 1:
+            return None
+        ref_pos = reference_positions[0]
+        if ref_pos == 0 or ref_pos == len(run_list) - 1:
+            return None
+        # Do not rewrite through hyperlinks or interleaved comments.
+        if any(run.getparent() is not segment.container for run in run_list):
+            return None
+        if any(run_list[k].getnext() is not run_list[k + 1]
+               for k in range(len(run_list) - 1)):
+            return None
+        def text_of(run):
+            return "".join(child.text or "" for child in run if child.tag == f"{{{W_NS}}}t")
+        # segment.old excludes unchanged text before/after the edit. The
+        # reference offset above is measured from the *whole first run*, so
+        # subtract the untouched prefix before mapping it into segment.old.
+        # Otherwise a reference after "metoder" can drift into "Sammantaget"
+        # when the first run contains text before the edit anchor.
+        complete_text = "".join(text_of(run) for run in run_list)
+        if complete_text != segment.before + segment.old + segment.after:
+            return None
+        boundary = sum(len(text_of(run)) for run in run_list[:ref_pos]) - len(segment.before)
+        old, new = segment.old, segment.new
+        if boundary < 0 or boundary > len(old):
+            return None
+        if boundary < 8 or len(old) - boundary < 8:
+            return None
+        context = old[boundary - 8:boundary + 8]
+        if old.count(context) != 1 or new.count(context) != 1:
+            return None
+        cut = None
+        for kind, a, b, c, d in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+            if kind == "equal" and a <= boundary - 8 and b >= boundary + 8:
+                cut = c + (boundary - a)
+                break
+        if cut is None or new[cut - 8:cut + 8] != context:
+            return None
+        left_runs, right_runs = run_list[:ref_pos], run_list[ref_pos + 1:]
+        left = SpanSegment(container=segment.container, runs=left_runs,
+                           old=old[:boundary], new=new[:cut],
+                           before=segment.before, after="",
+                           first_run=left_runs[0], last_run=left_runs[-1])
+        right = SpanSegment(container=segment.container, runs=right_runs,
+                            old=old[boundary:], new=new[cut:],
+                            before="", after=segment.after,
+                            first_run=right_runs[0], last_run=right_runs[-1])
+        return [left, right]
+
+    @staticmethod
+    def _stable_formatted_run_pieces(segment):
+        """Conservatively split one edit over plain differently formatted runs.
+
+        Boundaries must be pinned by unique equal text on *both* sides.
+        Allow partial outer runs only after exact prefix/suffix verification.
+        Refuse markup or ambiguous/revised boundaries.
+        This is deliberately narrower than general multi-run editing.
+        """
+        runs = segment.runs
+        if (len(runs) < 2 or segment.container.tag != f"{{{W_NS}}}p"):
+            return None
+        allowed = {f"{{{W_NS}}}rPr", f"{{{W_NS}}}t"}
+        if any(run.tag != f"{{{W_NS}}}r" or run.getparent() is not segment.container
+               or any(child.tag not in allowed for child in run)
+               or not any(child.tag == f"{{{W_NS}}}t" for child in run)
+               for run in runs):
+            return None
+        if any(runs[i].getnext() is not runs[i + 1] for i in range(len(runs) - 1)):
+            return None
+        texts = ["".join(child.text or "" for child in run
+                         if child.tag == f"{{{W_NS}}}t") for run in runs]
+        old, new = segment.old, segment.new
+        # The edit can start/end inside its outer runs. Check the *whole*
+        # source before translating formatting boundaries into edit offsets.
+        # Otherwise untouched prefixes drift across revision boundaries.
+        if not all(texts) or "".join(texts) != segment.before + old + segment.after:
+            return None
+        # A boundary can only be reused when its surrounding text is fixed.
+        # A four-character window on each side is a conservative minimum.
+        matcher = SequenceMatcher(None, old, new, autojunk=False)
+        opcodes = matcher.get_opcodes()
+        old_cuts = []
+        pos = 0
+        for value in texts[:-1]:
+            pos += len(value)
+            cut = pos - len(segment.before)
+            # Every source run must own actual changed-span text. A run
+            # consisting only of untouched prefix/suffix is not split here.
+            if not 0 < cut < len(old):
+                return None
+            old_cuts.append(cut)
+        new_cuts = []
+        for pos in old_cuts:
+            if pos < 4 or len(old) - pos < 4:
+                return None
+            context = old[pos - 4:pos + 4]
+            if old.count(context) != 1 or new.count(context) != 1:
+                return None
+            mapped = None
+            for kind, i1, i2, j1, j2 in opcodes:
+                if kind == "equal" and i1 <= pos - 4 and i2 >= pos + 4:
+                    mapped = j1 + pos - i1
+                    break
+            if mapped is None or new[mapped - 4:mapped + 4] != context:
+                return None
+            new_cuts.append(mapped)
+        pieces = []
+        boundaries_old = [0] + old_cuts + [len(old)]
+        boundaries_new = [0] + new_cuts + [len(new)]
+        for i, run in enumerate(runs):
+            pieces.append(SpanSegment(container=segment.container, runs=[run],
+                                      old=old[boundaries_old[i]:boundaries_old[i + 1]],
+                                      new=new[boundaries_new[i]:boundaries_new[i + 1]],
+                                      before=segment.before if i == 0 else "",
+                                      after=segment.after if i == len(runs) - 1 else "",
+                                      first_run=run, last_run=run))
+        return pieces
 
     @staticmethod
     def _unsafe_span_run_elements(segments):
