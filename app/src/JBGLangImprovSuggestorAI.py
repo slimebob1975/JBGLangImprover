@@ -1280,6 +1280,12 @@ class JBGLangImprovSuggestorAI:
         if protected_reason:
             return {"reject": True, "reason": protected_reason}
 
+        # Ett lokalt AI-förslag får inte byta stavning eller versalisering i
+        # identifierbara flerdelade egennamn från originalstycket. Kontrollen
+        # utgår från originalet så även minimerade ordbyten fångas.
+        if self._changes_proper_name(s):
+            return {"reject": True, "reason": "protected_proper_name_changed"}
+
         # Lagrumshänvisningar ("6 c §", "1 kap. 6 §", "(1997:238)") får aldrig
         # ändras av ett språkförslag. Kontrolleras före undantagen från
         # likhetsreglerna, så att t.ex. "c" -> "b" i "6 c §" inte godkänns som
@@ -1381,6 +1387,37 @@ class JBGLangImprovSuggestorAI:
                 elif active_level is not None and level <= active_level:
                     active_level = None
         return active_level is not None
+
+    # Två eller fler intilliggande versalinitiala ord är en försiktig signal
+    # om ett namn, t.ex. "Sveriges Arbetares" eller "Högsta Förvaltningsdomstolen".
+    # Enskilda versalord i löptext ("Arbetsförmedlingen") spärras inte
+    # generellt; det skulle hindra legitima syftningsförbättringar.
+    _MULTIWORD_NAME_RE = re.compile(
+        r"(?<![\w-])[A-ZÅÄÖ][a-zåäöA-ZÅÄÖ]+"
+        r"(?:[ \t]+[A-ZÅÄÖ][a-zåäöA-ZÅÄÖ]+)+(?![\w-])"
+    )
+
+    def _changes_proper_name(self, s: SuggestedChange) -> bool:
+        """Reject changes intersecting an existing multiword proper name.
+
+        Reject only if the exact original name is absent from the proposed
+        paragraph. The test is on the original source, not the minimized old
+        substring, which can be just the second word of a name.
+        """
+        source = self._get_element_text_for_suggestion(s)
+        if not source:
+            return False
+        span = self._find_span_or_normalized_span(s.old, source)
+        if span is None:
+            return False
+        start, end = span
+        proposed = source[:start] + s.new + source[end:]
+        for match in self._MULTIWORD_NAME_RE.finditer(source):
+            if match.start() < end and match.end() > start:
+                name = match.group(0)
+                if proposed.count(name) < source.count(name):
+                    return True
+        return False
 
     def _similarity_ratio(self, old: str, new: str) -> float:
         # Character sequences longer than 200 characters trigger
