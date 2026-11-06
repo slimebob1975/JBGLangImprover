@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Optional
@@ -64,7 +67,7 @@ class TrackedChangesRenderer:
         DOCUMENT_ELEMENT_TYPES | FOOTNOTE_ELEMENT_TYPES | STORY_ELEMENT_TYPES
     )
 
-    def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst", word_level_changes: bool = False):
+    def __init__(self, package: DocxPackage, logger, author: str = "JBG Klarspråkningstjänst", word_level_changes: bool = True):
         self.package = package
         self.logger = logger
         self.author = author
@@ -181,6 +184,7 @@ class TrackedChangesRenderer:
 
     def apply_plans(self, plans: list[ChangePlan]) -> list[RenderResult]:
         results = []
+        self._fallback_fixtures = []
 
         grouped: dict[tuple, list[ChangePlan]] = {}
 
@@ -222,8 +226,16 @@ class TrackedChangesRenderer:
             valid_group.sort(key=lambda p: p.anchor.start, reverse=True)
 
             for plan in valid_group:
+                # Opt-in: capture the exact pre-edit OOXML only for genuine
+                # formatting/container fallbacks, never for ordinary runs.
+                snapshot = self._fallback_fixture_snapshot(plan)
                 result = self.apply_plan(plan)
                 results.append(result)
+                if (snapshot is not None and result.applied and
+                        result.word_level_fallback_reason in
+                        {"mixed_run_formatting", "multiple_edit_segments"}):
+                    snapshot["fallback_reason"] = result.word_level_fallback_reason
+                    self._fallback_fixtures.append(snapshot)
 
                 if result.applied:
                     if plan.target.part_name == "word/document.xml":
@@ -233,7 +245,73 @@ class TrackedChangesRenderer:
                     elif plan.target.element_type in self.STORY_ELEMENT_TYPES:
                         self.story_adapter.refresh(plan.target.part_name)
 
+        self._write_fallback_fixtures()
         return results
+
+    def _fallback_fixture_snapshot(self, plan: ChangePlan):
+        """Return a lossless paragraph snapshot, without changing the renderer.
+
+        The snapshot includes source text and raw XML. It may contain private
+        document content, so it is exported only with explicit opt-in.
+        """
+        if (not self.word_level_changes or
+                not os.environ.get("JBG_WORDLEVEL_CAPTURE_PATH") or
+                plan.target.element_type != "paragraph" or
+                plan.target.part_name != "word/document.xml"):
+            return None
+        try:
+            model = self.document_adapter.get_paragraph_model_for_plan(plan)
+            paragraph = model.paragraph_element
+            # Do not attempt to replay paragraphs that already contain edits.
+            # They depend on the order of other proposals.
+            if any(el.tag in {f"{{{W_NS}}}ins", f"{{{W_NS}}}del"}
+                   for el in paragraph.iter()):
+                return None
+            old = model.visible_text
+            # Reject formats that the standalone replay model cannot represent
+            # exactly. Footnote references are retained as immutable anchors.
+            if any(el.tag in {f"{{{W_NS}}}tab", f"{{{W_NS}}}br", f"{{{W_NS}}}drawing"}
+                   for el in paragraph.iter()):
+                return None
+            if (plan.anchor.start < 0 or plan.anchor.end > len(old) or
+                    old[plan.anchor.start:plan.anchor.end] != plan.old_text):
+                return None
+            if old.count(plan.old_text) != 1:
+                return None
+            return {
+                "id": str(plan.target.element_id),
+                "source_text": old,
+                "old": plan.old_text,
+                "new": plan.new_text,
+                "anchor_start": plan.anchor.start,
+                "anchor_end": plan.anchor.end,
+                "paragraph_xml": etree.tostring(paragraph, encoding="unicode"),
+            }
+        except Exception as exc:
+            self.logger.debug("Word-level fixture snapshot skipped: %s", exc)
+            return None
+
+    def _write_fallback_fixtures(self):
+        path = os.environ.get("JBG_WORDLEVEL_CAPTURE_PATH")
+        if not path or not self._fallback_fixtures:
+            return
+        try:
+            target = Path(path)
+            # Do not silently overwrite existing captures from earlier runs.
+            if target.exists():
+                self.logger.warning("Word-level capture file exists; not overwriting: %s", target)
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema": 1,
+                "description": "Sensitive pre-render OOXML snapshots of actual fallback proposals; keep local.",
+                "cases": self._fallback_fixtures,
+            }
+            with target.open("x", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+        except OSError as exc:
+            self.logger.warning("Could not export word-level diagnostics: %s", exc)
 
     # ------------------------------------------------------------------
     # Hög-nivå per elementtyp
@@ -636,6 +714,8 @@ class TrackedChangesRenderer:
                 # piece before modifying XML; never rewrite through the
                 # reference or through nested containers such as hyperlinks.
                 prepared = self._prepare_immutable_boundary_word_edits(paragraph, plan.segments)
+                if prepared is None:
+                    prepared = self._prepare_bookmark_trailing_space_word_edits(paragraph, plan.segments)
                 if prepared is not None:
                     first_result = last_result = None
                     for piece, exact in prepared:
@@ -783,6 +863,55 @@ class TrackedChangesRenderer:
         # been checked before the first run is replaced.
         return prepared or None
 
+    @classmethod
+    def _prepare_bookmark_trailing_space_word_edits(cls, paragraph, segments):
+        """Preserve a heading bookmark when only its outside trailing space is removed.
+
+        The source span must end in a whitespace-only run immediately after
+        one bookmarkEnd; all other changed text must be in contiguous plain
+        direct runs immediately before that bookmarkEnd. Never move or
+        reconstruct the bookmark: replace only the text runs. No generic
+        splitting of changed bookmark boundaries is attempted here.
+        """
+        if len(segments) != 2:
+            return None
+        main, suffix = segments
+        if (main.container is not paragraph or suffix.container is not paragraph
+                or not main.runs or len(suffix.runs) != 1
+                or suffix.before or suffix.after or not suffix.old
+                or not suffix.old.isspace() or suffix.new != ""):
+            return None
+        boundary = main.last_run.getnext()
+        if (boundary is None or boundary.tag != f"{{{W_NS}}}bookmarkEnd"
+                or boundary.getnext() is not suffix.first_run):
+            return None
+        bookmark_id = boundary.get(f"{{{W_NS}}}id")
+        starts = paragraph.xpath("./w:bookmarkStart[@w:id=$id]",
+                                 namespaces={"w": W_NS}, id=bookmark_id)
+        ends = paragraph.xpath("./w:bookmarkEnd[@w:id=$id]",
+                               namespaces={"w": W_NS}, id=bookmark_id)
+        if not bookmark_id or len(starts) != 1 or ends != [boundary]:
+            return None
+        children = list(paragraph)
+        if not (children.index(starts[0]) < children.index(main.first_run)
+                and children.index(main.last_run) < children.index(boundary)):
+            return None
+        # Do not allow intervening runs/markers or heterogeneous run properties.
+        for first, second in zip(main.runs, main.runs[1:]):
+            if first.getnext() is not second:
+                return None
+        for piece in (main, suffix):
+            if cls._word_run_safety_reason(paragraph, piece, piece.old, piece.new) is not None:
+                return None
+        main_diff = TokenDiffEngine().build_diff(main.old, main.new, lossless=True)
+        if cls._word_diff_safety_reason(main.old, main.new, main_diff) is not None:
+            return None
+        suffix_diff = TokenDiffEngine().build_diff(suffix.old, suffix.new, lossless=True)
+        if ("".join(d.text for d in suffix_diff if d.kind != "insert") != suffix.old
+                or any(d.kind != "delete" for d in suffix_diff)):
+            return None
+        return [(main, main_diff), (suffix, suffix_diff)]
+
     @staticmethod
     def _split_at_stable_footnote_reference(segment):
         """Plan two text edits around one untouched standalone footnote run.
@@ -883,7 +1012,7 @@ class TrackedChangesRenderer:
         if not all(texts) or "".join(texts) != segment.before + old + segment.after:
             return None
         # A boundary can only be reused when its surrounding text is fixed.
-        # A four-character window on each side is a conservative minimum.
+        # Try four characters per side first; three is the strict minimum.
         matcher = SequenceMatcher(None, old, new, autojunk=False)
         opcodes = matcher.get_opcodes()
         old_cuts = []
@@ -898,19 +1027,32 @@ class TrackedChangesRenderer:
             old_cuts.append(cut)
         new_cuts = []
         for pos in old_cuts:
-            if pos < 4 or len(old) - pos < 4:
-                return None
-            context = old[pos - 4:pos + 4]
-            if old.count(context) != 1 or new.count(context) != 1:
-                return None
+            # Prefer the original 4+4 proof. A *unique*, unchanged 3+3
+            # window also pins the same exact run boundary when a nearby
+            # edit leaves fewer than four characters on either side. Never
+            # infer where revised text belongs: the entire window must be
+            # inside one SequenceMatcher equal opcode in both texts.
             mapped = None
-            for kind, i1, i2, j1, j2 in opcodes:
-                if kind == "equal" and i1 <= pos - 4 and i2 >= pos + 4:
-                    mapped = j1 + pos - i1
+            for radius in (4, 3):
+                if pos < radius or len(old) - pos < radius:
+                    continue
+                context = old[pos - radius:pos + radius]
+                if old.count(context) != 1 or new.count(context) != 1:
+                    continue
+                for kind, i1, i2, j1, j2 in opcodes:
+                    if kind != "equal" or i1 > pos - radius or i2 < pos + radius:
+                        continue
+                    candidate = j1 + pos - i1
+                    if new[candidate - radius:candidate + radius] == context:
+                        mapped = candidate
+                        break
+                if mapped is not None:
                     break
-            if mapped is None or new[mapped - 4:mapped + 4] != context:
+            if mapped is None:
                 return None
             new_cuts.append(mapped)
+        if any(left >= right for left, right in zip(new_cuts, new_cuts[1:])):
+            return None
         pieces = []
         boundaries_old = [0] + old_cuts + [len(old)]
         boundaries_new = [0] + new_cuts + [len(new)]

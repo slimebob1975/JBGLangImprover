@@ -40,9 +40,21 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertFalse(self.checked("simpleMarking"))
 
     def test_optional_features_are_off_by_default(self):
-        for element_id in ("globalReview", "computeLix", "includeAboutSection", "wordLevelChanges"):
+        for element_id in ("globalReview", "computeLix", "includeAboutSection"):
             with self.subTest(element_id=element_id):
                 self.assertFalse(self.checked(element_id))
+
+    def test_word_level_is_always_on_in_the_user_interface(self):
+        self.assertNotIn("wordLevelChanges", self.inputs)
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        self.assertNotIn("wordLevelChanges", script)
+        self.assertNotIn('formData.append("word_level_changes"', script)
+
+    def test_python_renderer_defaults_to_word_level(self):
+        from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
+        from app.src.JBGLanguageImprover import JBGLanguageImprover
+        self.assertTrue(inspect.signature(TrackedChangesRenderer).parameters["word_level_changes"].default)
+        self.assertTrue(inspect.signature(JBGLanguageImprover).parameters["word_level_changes"].default)
 
     @unittest.skipUnless(HAS_FASTAPI, "fastapi saknas i miljön")
     def test_server_defaults_match_the_form(self):
@@ -55,7 +67,9 @@ class GuiDefaultsTests(unittest.TestCase):
         defaults = {name: p.default.default for name, p in inspect.signature(main.upload_file).parameters.items()
                     if hasattr(p.default, "default")}
         self.assertEqual(defaults["docx_mode"], "tracked")
-        self.assertFalse(defaults["word_level_changes"])
+        self.assertNotIn("word_level_changes", defaults)
+        self.assertNotIn("word_level_changes", inspect.signature(main.upload_file).parameters)
+
         self.assertEqual((defaults["global_review"], defaults["compute_lix"], defaults["include_about_section"]),
                          (False, False, False))
 

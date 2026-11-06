@@ -134,6 +134,46 @@ class FormattedBoundaryTests(unittest.TestCase):
                               before='Före: ', after=' Efter.', first_run=left, last_run=right)
         self.assertIsNone(TrackedChangesRenderer._stable_formatted_run_pieces(segment))
 
+    def test_short_unique_boundary_preserves_formatted_runs(self):
+        from app.src.JBGRunEditing import SpanSegment
+        left_text = 'Vi gör en lång xy'
+        right_text = ' och sedan fattar vi beslut.'
+        old = left_text + right_text
+        new = 'Vi gör en kort xy och snart fattar vi beslut.'
+        p = etree.Element(W + 'p')
+        left = etree.SubElement(p, W + 'r')
+        etree.SubElement(left, W + 't').text = left_text
+        right = etree.SubElement(p, W + 'r')
+        etree.SubElement(etree.SubElement(right, W + 'rPr'), W + 'b')
+        etree.SubElement(right, W + 't').text = right_text
+        segment = SpanSegment(container=p, runs=[left, right], old=old, new=new,
+                              before='', after='', first_run=left, last_run=right)
+        pieces = TrackedChangesRenderer._stable_formatted_run_pieces(segment)
+        self.assertIsNotNone(pieces)
+        self.assertEqual(len(pieces), 2)
+        self.assertEqual(''.join(item.old for item in pieces), old)
+        self.assertEqual(''.join(item.new for item in pieces), new)
+        self.assertEqual(pieces[0].old, 'Vi gör en lång xy')
+        self.assertEqual(pieces[0].new, 'Vi gör en kort xy')
+        self.assertEqual(pieces[1].old, ' och sedan fattar vi beslut.')
+        self.assertEqual(pieces[1].new, ' och snart fattar vi beslut.')
+
+    def test_short_ambiguous_boundary_is_rejected(self):
+        from app.src.JBGRunEditing import SpanSegment
+        left_text = 'Ändra aa xy'
+        right_text = ' zz och ändra bb xy zz nu.'
+        old = left_text + right_text
+        new = old.replace('aa', 'cc').replace('bb', 'dd')
+        p = etree.Element(W + 'p')
+        left = etree.SubElement(p, W + 'r')
+        etree.SubElement(left, W + 't').text = left_text
+        right = etree.SubElement(p, W + 'r')
+        etree.SubElement(etree.SubElement(right, W + 'rPr'), W + 'b')
+        etree.SubElement(right, W + 't').text = right_text
+        segment = SpanSegment(container=p, runs=[left, right], old=old, new=new,
+                              before='', after='', first_run=left, last_run=right)
+        self.assertIsNone(TrackedChangesRenderer._stable_formatted_run_pieces(segment))
+
     def test_changed_or_ambiguous_boundary_is_not_split(self):
         from app.src.JBGRunEditing import SpanSegment
         first = 'Vi gör en omfattande'

@@ -248,7 +248,6 @@ async def upload_file(
     include_about_section: bool = Form(False),
     compute_lix: bool = Form(False),
     global_review: bool = Form(False),
-    word_level_changes: bool = Form(False),
 ):
     # Generate job ID and paths
     job_id = str(uuid.uuid4())
@@ -279,7 +278,7 @@ async def upload_file(
     logger.info(f"ℹ️ Include 'Om klarspråkningen' section: {include_about_section}")
     logger.info(f"📊 Compute LIX: {compute_lix}")
     logger.info(f"🌐 Global review: {global_review}")
-    logger.info(f"🔬 Experimental word-level changes: {word_level_changes}")
+    logger.info("Word-level tracked changes enabled by default (safe span fallback)")
 
     # Extract prompt parts and validate
     editable_part = editable_prompt.strip()
@@ -311,7 +310,7 @@ async def upload_file(
                 prompt_customized=prompt_customized,
                 compute_readability=compute_lix,
                 global_review=global_review,
-                word_level_changes=word_level_changes,
+                word_level_changes=True,
             )
             result = improver.run()
             shutil.move(result, output_path)

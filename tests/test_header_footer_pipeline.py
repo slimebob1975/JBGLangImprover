@@ -125,8 +125,10 @@ class HeaderFooterPipelineTests(unittest.TestCase):
         footer_tree = self._read_part_tree(output, footer_part)
         self.assertTrue(header_tree.xpath(".//w:strike", namespaces=NS))
         self.assertTrue(footer_tree.xpath(".//w:strike", namespaces=NS))
-        self.assertIn("Header gamma", self._all_text(header_tree))
-        self.assertIn("Footer delta", self._all_text(footer_tree))
+        self.assertIn("Header gamma", self._revision_text(header_tree, accept=True))
+        self.assertIn("Header alpha", self._revision_text(header_tree, accept=False))
+        self.assertIn("Footer delta", self._revision_text(footer_tree, accept=True))
+        self.assertIn("Footer beta", self._revision_text(footer_tree, accept=False))
 
     def test_tracked_changes_render_header_and_footer_and_preserve_fields(self):
         output = self.root / "tracked.docx"
@@ -152,14 +154,16 @@ class HeaderFooterPipelineTests(unittest.TestCase):
         )
 
         header_tree = self._read_part_tree(output, header_part)
-        footer_part = self._find_part_with_text(output, "word/footer", "Footer beta")
+        footer_part = self._find_part_with_text(output, "word/footer", "Footer delta")
         footer_tree = self._read_part_tree(output, footer_part)
         self.assertTrue(header_tree.xpath(".//w:del", namespaces=NS))
         self.assertTrue(header_tree.xpath(".//w:ins", namespaces=NS))
         self.assertTrue(footer_tree.xpath(".//w:del", namespaces=NS))
         self.assertTrue(footer_tree.xpath(".//w:ins", namespaces=NS))
-        self.assertIn("Header gamma", self._all_text(header_tree))
-        self.assertIn("Footer delta", self._all_text(footer_tree))
+        self.assertIn("Header gamma", self._revision_text(header_tree, accept=True))
+        self.assertIn("Header alpha", self._revision_text(header_tree, accept=False))
+        self.assertIn("Footer delta", self._revision_text(footer_tree, accept=True))
+        self.assertIn("Footer beta", self._revision_text(footer_tree, accept=False))
 
         settings_tree = self._read_part_tree(output, "word/settings.xml")
         self.assertTrue(settings_tree.xpath(".//w:trackRevisions", namespaces=NS))
@@ -208,12 +212,14 @@ class HeaderFooterPipelineTests(unittest.TestCase):
         comments_tree = self._read_part_tree(output, "word/comments.xml")
         self.assertEqual(len(comments_tree.xpath(".//w:comment", namespaces=NS)), 2)
 
-        for prefix, changed_text in (
-            ("word/header", "Header gamma"),
-            ("word/footer", "Footer delta"),
+        for prefix, changed_text, original_text in (
+            ("word/header", "Header gamma", "Header alpha"),
+            ("word/footer", "Footer delta", "Footer beta"),
         ):
             part_name = self._find_part_with_text(output, prefix, changed_text)
             story_tree = self._read_part_tree(output, part_name)
+            self.assertIn(changed_text, self._revision_text(story_tree, accept=True))
+            self.assertIn(original_text, self._revision_text(story_tree, accept=False))
             self.assertTrue(story_tree.xpath(".//w:commentRangeStart", namespaces=NS))
             self.assertTrue(story_tree.xpath(".//w:commentRangeEnd", namespaces=NS))
             self.assertTrue(story_tree.xpath(".//w:commentReference", namespaces=NS))
@@ -366,9 +372,20 @@ class HeaderFooterPipelineTests(unittest.TestCase):
             for name in archive.namelist():
                 if name.startswith(prefix) and name.endswith(".xml"):
                     tree = etree.ElementTree(etree.fromstring(archive.read(name)))
-                    if text in cls._all_text(tree):
+                    if text in cls._revision_text(tree, accept=True):
                         return name
         raise AssertionError(f"Could not find {prefix} part containing {text!r}")
+
+    @staticmethod
+    def _revision_text(tree, accept: bool):
+        # Word does not show deleted and inserted alternatives at once.
+        # Testing their concatenation wrongly assumes span-level revisions.
+        if accept:
+            xpath = ".//w:t[not(ancestor::w:del)]/text()"
+        else:
+            xpath = (".//w:t[not(ancestor::w:ins)]/text() "
+                     "| .//w:delText/text()")
+        return "".join(tree.xpath(xpath, namespaces=NS))
 
     @staticmethod
     def _all_text(tree):

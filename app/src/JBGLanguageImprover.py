@@ -75,7 +75,7 @@ class JBGLanguageImprover:
         prompt_customized=None,
         compute_readability=True,
         global_review=False,
-        word_level_changes=False,
+        word_level_changes=True,
         **kwargs,
     ):
         self.input_path = input_path

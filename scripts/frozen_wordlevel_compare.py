@@ -4,6 +4,7 @@ No AI calls, network, writes to user documents, or imports from a second revisio
 into this process. The baseline runs in its own temporary checkout via git archive.
 """
 import argparse
+from copy import deepcopy
 import io
 import json
 import logging
@@ -31,13 +32,27 @@ def fixture_path():
 
 
 def view_text(paragraph, accept):
+    """Read the chosen revision view, including text inside hyperlinks.
+
+    A hyperlink is a paragraph-level container for runs and revisions. Simply
+    iterating its text nodes would also include the *opposite* revision view.
+    """
     chunks = []
+    excluded = W + ("del" if accept else "ins")
+    containers = {W + "r", W + "hyperlink", W + "ins", W + "del"}
+
+    def visit(element):
+        if element.tag == excluded:
+            return
+        if element.tag in (W + "t", W + "delText"):
+            chunks.append(element.text or "")
+            return
+        for child in element:
+            visit(child)
+
     for el in paragraph:
-        if el.tag not in (W + "r", W + ("ins" if accept else "del")):
-            continue
-        for child in el.iter():
-            if child.tag in (W + "t", W + "delText"):
-                chunks.append(child.text or "")
+        if el.tag in containers:
+            visit(el)
     return "".join(chunks)
 
 
@@ -57,7 +72,7 @@ def reference_locations(paragraph, accept):
 def revision_counts(paragraph):
     counts = {}
     for tag in ("ins", "del"):
-        wrappers = paragraph.xpath("./w:" + tag, namespaces=NS)
+        wrappers = paragraph.xpath(".//w:" + tag, namespaces=NS)
         counts[tag] = len(wrappers)
         counts[tag + "_chars"] = sum(
             len(el.text or "") for wrapper in wrappers for el in wrapper.iter()
@@ -77,19 +92,39 @@ def run_case(case, temp, logger):
 
     source, destination = temp / "src.docx", temp / "result.docx"
     doc = Document()
-    p = doc.add_paragraph()
-    for spec in case["runs"]:
-        run = p.add_run(spec.get("text", ""))
-        if spec.get("bold"):
-            run.bold = True
-        if "footnote_id" in spec:
-            etree.SubElement(run._r, W + "footnoteReference").set(W + "id", spec["footnote_id"])
+    if "paragraph_xml" in case:
+        # The actual paragraph OOXML is captured before the change, preserving
+        # original run formatting, non-text markers and run boundaries.
+        p = etree.fromstring(case["paragraph_xml"].encode("utf-8"))
+        body = doc._element.body
+        sect = body.find(W + "sectPr")
+        body.insert(body.index(sect) if sect is not None else len(body), deepcopy(p))
+        expected_old = view_text(p, False)
+        if expected_old != case["source_text"]:
+            raise AssertionError(case["id"] + ": captured source text mismatch")
+    else:
+        p = doc.add_paragraph()
+        for spec in case["runs"]:
+            run = p.add_run(spec.get("text", ""))
+            if spec.get("bold"):
+                run.bold = True
+            if "footnote_id" in spec:
+                etree.SubElement(run._r, W + "footnoteReference").set(W + "id", spec["footnote_id"])
+        expected_old = "".join(item.get("text", "") for item in case["runs"])
+        if expected_old != case["old"]:
+            raise AssertionError(case["id"] + ": fixture old text mismatch")
+    expected_new = expected_old
+    if "paragraph_xml" in case:
+        start, end = case["anchor_start"], case["anchor_end"]
+        if expected_old[start:end] != case["old"]:
+            raise AssertionError(case["id"] + ": captured anchor mismatch")
+        expected_new = expected_old[:start] + case["new"] + expected_old[end:]
+    else:
+        expected_new = case["new"]
+    original_reference_offsets = reference_locations(p._p if hasattr(p, "_p") else p, False)
     doc.save(source)
-    expected_old = "".join(item.get("text", "") for item in case["runs"])
-    if expected_old != case["old"]:
-        raise AssertionError(case["id"] + ": fixture old text mismatch")
     structure = DocumentStructureExtractor(str(source), logger).extract()
-    matches = [x for x in structure["elements"] if x.get("type") == "paragraph" and x.get("text") == case["old"]]
+    matches = [x for x in structure["elements"] if x.get("type") == "paragraph" and x.get("text") == expected_old]
     if len(matches) != 1:
         raise AssertionError(case["id"] + ": source paragraph not unique")
     change = SuggestedChange(element_type="paragraph", element_id=matches[0]["element_id"],
@@ -113,14 +148,8 @@ def run_case(case, temp, logger):
         root = etree.fromstring(zip_file.read("word/document.xml"))
         comment_root = etree.fromstring(zip_file.read("word/comments.xml"))
     paragraph = root.xpath(".//w:body/w:p", namespaces=NS)[0]
-    if view_text(paragraph, False) != case["old"] or view_text(paragraph, True) != case["new"]:
+    if view_text(paragraph, False) != expected_old or view_text(paragraph, True) != expected_new:
         raise AssertionError(case["id"] + ": accepted/rejected text mismatch")
-    original_reference_offsets = []
-    position = 0
-    for item in case["runs"]:
-        if "footnote_id" in item:
-            original_reference_offsets.append((item["footnote_id"], position))
-        position += len(item.get("text", ""))
     if reference_locations(paragraph, False) != original_reference_offsets:
         raise AssertionError(case["id"] + ": original footnote moved")
     if len(reference_locations(paragraph, True)) != len(original_reference_offsets):
@@ -173,7 +202,8 @@ def baseline_probe(ref, fixture_file):
         fixture_dest = baseline / "tests" / "fixtures" / fixture_file.name
         fixture_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(fixture_file, fixture_dest)
-        runner = subprocess.run([sys.executable, str(target), "--probe-only"],
+        runner = subprocess.run([sys.executable, str(target), "--probe-only",
+                                 "--fixture-file", str(fixture_dest)],
                                 cwd=baseline, capture_output=True, text=True)
         if runner.returncode:
             raise RuntimeError("Baseline probe failed:\n" + runner.stderr[-4000:])
@@ -185,8 +215,10 @@ def main():
     parser.add_argument("--baseline-ref", default=None, help="Local committed Git ref, e.g. HEAD")
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--fixture-file", type=Path, default=None,
+                        help="Optional capture JSON with actual cases; keep private")
     args = parser.parse_args()
-    fixture_file = fixture_path()
+    fixture_file = args.fixture_file.resolve() if args.fixture_file else fixture_path()
     fixtures = json.loads(fixture_file.read_text(encoding="utf-8"))
     current = probe(fixtures)
     if args.probe_only:
@@ -197,7 +229,9 @@ def main():
         previous = baseline_probe(args.baseline_ref, fixture_file)
         by_id = {x["id"]: x for x in previous}
         report = {"schema": fixtures["schema"], "baseline_ref": args.baseline_ref,
-                  "note": "Frozen synthetic cases, not the original AI proposals; compare revisions with identical inputs.",
+                  "note": ("Private captured real proposals; identical pre-edit OOXML in both revisions."
+                           if args.fixture_file else
+                           "Frozen synthetic and reconstructed real-text cases; compare revisions with identical inputs."),
                   "cases": [{"id": item["id"], "baseline": by_id[item["id"]], "candidate": item,
                              "status_changed": (by_id[item["id"]]["status"] != item["status"]),
                              "delta_revised_chars": (

@@ -42,6 +42,7 @@ CASES = (
     ("narrow_nb_space", "Vi granskar 1\u202f234 ärenden och fattar beslut.",
      "Vi granskar 1\u202f234 ansökningar och fattar beslut.", "single", "word_level", None),
     ("no_shared_tokens", "Hej.", "Adjö!", "single", "span_fallback", "diff_no_common_text"),
+    ("equivalent_one_word", "kontroll", "kontroller", "single", "span_fallback", "diff_no_common_text_equivalent_span"),
 )
 
 
@@ -124,7 +125,7 @@ class DeterministicWordLevelComparisonTests(unittest.TestCase):
             # We aim for 80% word-level among APPLIED proposals over time, not
             # 80% of words or characters. This corpus is a guardrail, not an
             # estimate of performance on real reports.
-            self.assertEqual(proposal_counts, {"word_level": 5, "span_fallback": 4})
+            self.assertEqual(proposal_counts, {"word_level": 5, "span_fallback": 5})
             self.assertGreater(counts[True]["ins"] + counts[True]["del"],
                                counts[False]["ins"] + counts[False]["del"])
 

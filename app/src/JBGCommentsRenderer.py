@@ -222,10 +222,31 @@ class CommentsRenderer:
             raise ValueError("Anchor element is not inside a paragraph")
 
         parent = anchor_element.getparent()
-        if end_element.getparent() is not parent or self._find_ancestor_paragraph(end_element) is not paragraph:
-            raise ValueError("Segmented comment endpoints must share a paragraph and parent")
-        if parent is None:
-            raise ValueError("Anchor element has no parent")
+        if parent is None or self._find_ancestor_paragraph(end_element) is not paragraph:
+            raise ValueError("Segmented comment endpoints must share a paragraph")
+        if end_element.getparent() is not parent:
+            # Revisions can straddle a direct paragraph run and a hyperlink.
+            # Word comment-range markers must not be inserted as siblings in
+            # unrelated containers. Enclose the minimal top-level paragraph
+            # children instead; never move or reconstruct the hyperlink.
+            # This deliberately broadens the COMMENT highlight only, not the
+            # edited text or its revision scope.
+            def top_level(element):
+                current = element
+                while current.getparent() is not paragraph:
+                    current = current.getparent()
+                    if current is None:
+                        return None
+                if current is not element and current.tag != f"{{{W_NS}}}hyperlink":
+                    return None
+                return current
+
+            first_top = top_level(anchor_element)
+            last_top = top_level(end_element)
+            if first_top is None or last_top is None:
+                raise ValueError("Segmented comment endpoints have unsupported containers")
+            parent = paragraph
+            anchor_element, end_element = first_top, last_top
 
         if parent.index(end_element) < parent.index(anchor_element):
             raise ValueError("Segmented comment endpoints are reversed")

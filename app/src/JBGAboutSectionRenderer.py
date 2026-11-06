@@ -286,6 +286,7 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
     fallback_labels = {
         "diff_text_mismatch": "Normaliserad diff ändrade originaltexten",
         "diff_no_common_text": "Inga oförändrade textdelar",
+        "diff_no_common_text_equivalent_span": "Enskilt ordbyte – redan lika precist i spannläge",
         "diff_unchanged": "Identisk gammal och ny text",
         "diff_empty": "Tom diff",
         "diff_no_changes": "Inga ändringar i diffen",
@@ -306,7 +307,7 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
         "non_exact_run_text": "Text och runs stämmer inte exakt",
     }
     if diagnostics and diagnostics.get("enabled"):
-        blocks.append(_table_title("Experimentell ordnivårendering"))
+        blocks.append(_table_title("Ordnivåändringar med säker spann-fallback"))
         rows = [
             ["Resultat", "Antal förslag"],
             ["Ordnivå", _fmt_int(diagnostics.get("word_level", 0))],

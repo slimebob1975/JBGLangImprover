@@ -146,6 +146,35 @@ class WordLevelChangesTests(unittest.TestCase):
         self.assertEqual(len(root.xpath('.//w:del', namespaces=NS)), 0)
         self.assertEqual(len(root.xpath('.//w:ins', namespaces=NS)), 1)
 
+    def test_no_common_single_word_is_not_counted_as_visual_gain(self):
+        # Both renderers must show one word deleted and one word inserted;
+        # only the diagnostic reason changes, not the document or metric.
+        old, new = "kontroll", "kontroller"
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                root, comments = self.render(old, new, enabled)
+                self.assertEqual(self.text_from_revision(root, False), old)
+                self.assertEqual(self.text_from_revision(root, True), new)
+                self.assertEqual(len(root.xpath('.//w:del', namespaces=NS)), 1)
+                self.assertEqual(len(root.xpath('.//w:ins', namespaces=NS)), 1)
+                self.assertEqual(len(comments.xpath('.//w:comment', namespaces=NS)), 1)
+
+    def test_no_common_equivalence_requires_safe_single_word(self):
+        from types import SimpleNamespace
+        paragraph = etree.Element(f'{{{W_NS}}}p')
+        run = etree.SubElement(paragraph, f'{{{W_NS}}}r')
+        etree.SubElement(run, f'{{{W_NS}}}t').text = 'kontroll'
+        segment = SimpleNamespace(first_run=run, last_run=run, before='',
+                                  old='kontroll', new='kontroller', after='')
+        diff = TokenDiffEngine().build_diff('kontroll', 'kontroller', lossless=True)
+        checker = TrackedChangesRenderer._no_common_equivalent_span
+        self.assertTrue(checker(paragraph, segment, 'kontroll', 'kontroller', diff))
+        self.assertFalse(checker(paragraph, segment, 'kontroll', 'kontroller extra',
+                                 TokenDiffEngine().build_diff('kontroll', 'kontroller extra', lossless=True)))
+        self.assertFalse(checker(paragraph, segment, 'kontroll', 'kontroller', []))
+        etree.SubElement(run, f'{{{W_NS}}}br')
+        self.assertFalse(checker(paragraph, segment, 'kontroll', 'kontroller', diff))
+
     def test_no_common_tokens_still_falls_back_safely(self):
         old, new = 'Hej.', 'Adjö!'
         root, _ = self.render(old, new, True)

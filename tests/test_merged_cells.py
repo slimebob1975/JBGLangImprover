@@ -102,7 +102,18 @@ class MergedCellsTests(unittest.TestCase):
                                  [r.message for r in improver.render_results])
                 row = etree.fromstring(ZipFile(output).read("word/document.xml")).find(f".//{W}tbl").find(f"{W}tr")
                 third = row.findall(f"{W}tc")[2]
-                self.assertIn("Män och pojkar", "".join(t.text or "" for t in third.iter(f"{W}t", f"{W}delText")))
+                if mode == "tracked":
+                    accepted = "".join(third.xpath(
+                        ".//w:t[not(ancestor::w:del)]/text()", namespaces={"w": W_NS}))
+                    rejected = "".join(third.xpath(
+                        ".//w:t[not(ancestor::w:ins)]/text() | .//w:delText/text()",
+                        namespaces={"w": W_NS}))
+                    self.assertEqual(accepted, "Pojkar och män")
+                    self.assertEqual(rejected, "Män och pojkar")
+                else:
+                    combined = "".join(t.text or "" for t in third.iter(f"{W}t", f"{W}delText"))
+                    self.assertIn("Män och pojkar", combined)
+                    self.assertIn("Pojkar och män", combined)
 
 
 if __name__ == "__main__":

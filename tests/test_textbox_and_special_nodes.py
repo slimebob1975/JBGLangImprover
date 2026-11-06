@@ -75,8 +75,8 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
         self.assertTrue(results[0].applied, results[0].message)
         paragraphs = self._drawing_textbox_paragraphs(output, drawing_index=2)
         self.assertEqual(self._all_text(paragraphs[0]), "Andra rutans första stycke")
-        self.assertIn("ha diagranm%", self._all_text(paragraphs[1]))
-        self.assertIn("(se diagram)", self._all_text(paragraphs[1]))
+        self.assertEqual(self._revision_text(paragraphs[1], accept=False), "ha diagranm%")
+        self.assertEqual(self._revision_text(paragraphs[1], accept=True), "(se diagram)")
         self.assertTrue(paragraphs[1].xpath(".//w:del", namespaces=NS))
         self.assertTrue(paragraphs[1].xpath(".//w:ins", namespaces=NS))
 
@@ -129,7 +129,8 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
 
         self.assertTrue(results[0].applied, results[0].message)
         first = self._drawing_textbox_paragraphs(output, drawing_index=2)[0]
-        self.assertIn("Andra rutans inledande stycke", self._all_text(first))
+        self.assertEqual(self._revision_text(first, accept=False), "Andra rutans första stycke")
+        self.assertEqual(self._revision_text(first, accept=True), "Andra rutans inledande stycke")
 
     def test_tracked_change_can_end_at_a_linebreak_in_the_same_run(self):
         source = self.root / "linebreak.docx"
@@ -246,6 +247,15 @@ class TextboxAndSpecialNodeTests(unittest.TestCase):
         with ZipFile(path) as archive:
             root = etree.fromstring(archive.read("word/document.xml"))
         return root.xpath("//w:body/w:p", namespaces=NS)[0]
+
+    @staticmethod
+    def _revision_text(element, accept: bool):
+        if accept:
+            xpath = ".//w:t[not(ancestor::w:del)]/text()"
+        else:
+            xpath = (".//w:t[not(ancestor::w:ins)]/text() "
+                     "| .//w:delText/text()")
+        return "".join(element.xpath(xpath, namespaces=NS))
 
     @staticmethod
     def _all_text(element):
