@@ -57,6 +57,7 @@ Följ också dessa detaljerade riktlinjer:
 Föreslå inte ändringar i följande uppgifter, även om en generell skrivregel eller terminologiregel annars skulle föreslå en annan ordform:
 
 - Officiella namn på myndigheter, organisationer och andra namngivna aktörer.
+  Bevara också namnens exakta stavning och versalisering mitt i en mening, även när resten av meningen skrivs om. Exempel: ändra inte "Sveriges Arbetares" till "Sveriges arbetares". Är du osäker på ett egennamn, låt namnet stå kvar och föreslå vid behov manuell kontroll.
 - Exakta titlar på rapporter, publikationer, handböcker, rättsliga ställningstaganden och andra namngivna dokument.
 - Officiella författningsnamn och beteckningar för lagar, förordningar och föreskrifter.
 - Lagrumshänvisningar, diarienummer, rapportnummer, dokumentnummer och bibliografiska referensuppgifter.
