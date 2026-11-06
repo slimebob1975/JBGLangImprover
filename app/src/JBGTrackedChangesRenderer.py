@@ -37,9 +37,9 @@ except ModuleNotFoundError:
     from JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
 
 try:
-    from app.src.JBGChangePlanner import ChangePlan
+    from app.src.JBGChangePlanner import ChangePlan, DiffSegment
 except ModuleNotFoundError:
-    from JBGChangePlanner import ChangePlan
+    from JBGChangePlanner import ChangePlan, DiffSegment
 
 
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -757,6 +757,8 @@ class TrackedChangesRenderer:
                         # unique text window pins that boundary in both views.
                         # Each revised run then retains its own run properties.
                         pieces = self._stable_formatted_run_pieces(segment)
+                        if pieces is None:
+                            pieces = self._isolated_run_word_pieces(segment)
                         if pieces is not None:
                             prepared = []
                             for piece in pieces:
@@ -982,6 +984,105 @@ class TrackedChangesRenderer:
                             before="", after=segment.after,
                             first_run=right_runs[0], last_run=right_runs[-1])
         return [left, right]
+
+    @staticmethod
+    def _isolated_run_word_pieces(segment):
+        """Conservatively edit individual runs without moving formatting boundaries.
+
+        Every lossless token edit must fit within exactly one original text run.
+        Edits that cross runs, ambiguous insertions at a run boundary, nested
+        containers, or non-text run children remain in span fallback. Untouched
+        runs are not rebuilt. This is particularly useful just before a footnote
+        whose reference must remain entirely outside the edited text.
+        """
+        runs = segment.runs
+        W = f"{{{W_NS}}}"
+        if len(runs) < 2 or segment.container.tag != W + "p":
+            return None
+        texts = []
+        for run in runs:
+            if (run.tag != W + "r" or run.getparent() is not segment.container
+                    or any(ch.tag not in {W + "rPr", W + "t"} for ch in run)):
+                return None
+            value = "".join(ch.text or "" for ch in run if ch.tag == W + "t")
+            if not value:
+                return None
+            texts.append(value)
+        if any(a.getnext() is not b for a, b in zip(runs, runs[1:])):
+            return None
+        if "".join(texts) != segment.before + segment.old + segment.after:
+            return None
+        exact = TokenDiffEngine().build_diff(segment.old, segment.new, lossless=True)
+        if (not exact or
+                "".join(d.text for d in exact if d.kind != "insert") != segment.old or
+                "".join(d.text for d in exact if d.kind != "delete") != segment.new):
+            return None
+        # Edits are grouped until the next equal token. This keeps a delete
+        # and its replacement insertion on the SAME side of a run boundary.
+        edits = []
+        old_cursor = 0
+        group = []
+        group_start = 0
+        for diff in exact + [DiffSegment(kind="equal", text="")]:
+            if diff.kind == "equal":
+                if group:
+                    removed = "".join(d.text for d in group if d.kind == "delete")
+                    added = "".join(d.text for d in group if d.kind == "insert")
+                    edits.append((group_start, group_start + len(removed), added))
+                    group = []
+                old_cursor += len(diff.text)
+            else:
+                if not group:
+                    group_start = old_cursor
+                group.append(diff)
+                if diff.kind == "delete":
+                    old_cursor += len(diff.text)
+        if not edits:
+            return None
+        limits = []
+        cursor = -len(segment.before)
+        for value in texts:
+            limits.append((cursor, cursor + len(value)))
+            cursor += len(value)
+        assigned = {}
+        for start, end, replacement in edits:
+            candidates = [i for i, (a, b) in enumerate(limits)
+                          if (a <= start < end <= b if end > start
+                              else a < start < b)]
+            if len(candidates) != 1:
+                return None
+            index = candidates[0]
+            offset = start - limits[index][0]
+            assigned.setdefault(index, []).append((offset, end - start, replacement))
+        # Adjacent edited text runs need an independently fixed formatting
+        # boundary; leave that case to the existing stable-boundary planner.
+        # A trailing whitespace-only run may be deleted next to an edited
+        # text run, because no lexical text crosses the run boundary.
+        changed_indices = sorted(assigned)
+        if any(b == a + 1 and texts[a].strip() and texts[b].strip()
+               for a, b in zip(changed_indices, changed_indices[1:])):
+            return None
+        pieces = []
+        for index, edits_in_run in sorted(assigned.items()):
+            source = texts[index]
+            updated = source
+            for offset, count, inserted in reversed(edits_in_run):
+                updated = updated[:offset] + inserted + updated[offset + count:]
+            if updated == source:
+                continue
+            run = runs[index]
+            pieces.append(SpanSegment(container=segment.container, runs=[run],
+                                      old=source, new=updated, before="", after="",
+                                      first_run=run, last_run=run))
+        if not pieces:
+            return None
+        # Reconstruct the complete replacement before the first XML write.
+        combined = list(texts)
+        for piece in pieces:
+            combined[runs.index(piece.first_run)] = piece.new
+        if "".join(combined) != segment.before + segment.new + segment.after:
+            return None
+        return pieces
 
     @staticmethod
     def _stable_formatted_run_pieces(segment):

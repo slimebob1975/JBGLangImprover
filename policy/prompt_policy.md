@@ -62,13 +62,13 @@ Föreslå inte ändringar i följande uppgifter, även om en generell skrivregel
 - Lagrumshänvisningar, diarienummer, rapportnummer, dokumentnummer och bibliografiska referensuppgifter.
 - Direkt citerad lagtext, andra juridiska citat och återgivna formuleringar ur källmaterial.
 
-Lämna källförteckningar, litteraturlistor och fotnoter som enbart innehåller referensuppgifter utan språkliga ändringsförslag. Du får förbättra den omgivande löptexten, men skyddade textdelar ska återges exakt som i originalet. Ersätt exempelvis inte "arbetslöshetskassor" med "a-kassor" inne i en officiell lagtitel eller en publikationstitel, och ändra inte stora och små bokstäver i en titel. Regeln om skyddade uppgifter har företräde framför övriga stil- och terminologiregler.
+Skydda hela käll- och referensförteckningsposter, inklusive inledande beteckningar, kursiverade titlar, skiljetecken och avslutande blanksteg. Ändra inte ens språkligt rimliga förkortningar eller bindestreck i sådana poster. Lämna källförteckningar, litteraturlistor och fotnoter som enbart innehåller referensuppgifter utan språkliga ändringsförslag. Du får förbättra den omgivande löptexten, men skyddade textdelar ska återges exakt som i originalet. Ersätt exempelvis inte "arbetslöshetskassor" med "a-kassor" inne i en officiell lagtitel eller en publikationstitel, och ändra inte stora och små bokstäver i en titel. Regeln om skyddade uppgifter har företräde framför övriga stil- och terminologiregler.
 
 Om du upptäcker ett misstänkt sakfel, stavfel eller en inaktuell uppgift i en skyddad textdel ska du inte rätta den som en lokal textändring. Om granskningen medger iakttagelser eller kommentarer kan du i stället föreslå manuell kontroll, utan att påstå att uppgiften är felaktig om det inte är säkerställt.
 
 ### Mallinstruktioner och utkastmarkörer
 
-Föreslå inte språkliga omskrivningar av mallinstruktioner till skribenten, alternativtext som ska väljas bort, platshållare eller utkastmarkörer, till exempel "Börja skriva här", "DD månad ÅÅÅÅ", "20xx:x" och instruktioner om att ta bort ett avsnitt. Behandla dem inte som färdig rapporttext. Om kommentar- eller iakttagelsefunktionen används får du påtala att en platshållare eller mallinstruktion verkar finnas kvar inför publicering, men ändra inte texten automatiskt.
+Föreslå inte språkliga omskrivningar av mallinstruktioner till skribenten, alternativtext som ska väljas bort, platshållare eller utkastmarkörer, till exempel "Börja skriva här", "DD månad ÅÅÅÅ", "20xx:x" och instruktioner om att ta bort ett avsnitt. Skydda hela stycket om det innehåller en platshållare eller utgör en alternativ malltext, även om vissa ord i stycket i sig skulle kunna språkförbättras. Behandla dem inte som färdig rapporttext. Om kommentar- eller iakttagelsefunktionen används får du påtala att en platshållare eller mallinstruktion verkar finnas kvar inför publicering, men ändra inte texten automatiskt.
 
 ---
 

@@ -1273,6 +1273,13 @@ class JBGLangImprovSuggestorAI:
         if self._looks_like_corrupted_text(old):
             return {"reject": True, "reason": "corrupted_old_span"}
 
+        # Dokumentkontext kontrolleras mot hela KÄLLELEMENTET, inte mot den
+        # minimerade diffen. Därmed kan inte ett litet ordbyte i en bibliografisk
+        # post eller ett mallstycke kringgå skyddet.
+        protected_reason = self._protected_source_reason(s)
+        if protected_reason:
+            return {"reject": True, "reason": protected_reason}
+
         # Lagrumshänvisningar ("6 c §", "1 kap. 6 §", "(1997:238)") får aldrig
         # ändras av ett språkförslag. Kontrolleras före undantagen från
         # likhetsreglerna, så att t.ex. "c" -> "b" i "6 c §" inte godkänns som
@@ -1308,6 +1315,72 @@ class JBGLangImprovSuggestorAI:
                 return {"reject": True, "reason": "new_overlaps_following_context"}
 
         return {"reject": False, "reason": None}
+
+    # Deterministiska och medvetet konservativa skydd. De används även när
+    # användaren har ändrat standardprompten. Identifieringen utgår enbart från
+    # extraktorns strukturerade data, inte från modellens motivering.
+    _SOURCE_HEADINGS = {"källor", "referenser", "källförteckning", "litteraturförteckning"}
+    _TEMPLATE_PHRASES = (
+        "börja skriva här", "kort instruktion till dig som skriver",
+        "du kan radera denna ruta", "välj en av texterna nedan",
+        "radera hela avsnittet", "lathund till rapportmall",
+    )
+    _TEMPLATE_PLACEHOLDER_RE = re.compile(
+        r"\[[^\]\n]{4,}\]|\bDD\s+månad\b|\b20xx:x\b|"
+        r"\b(?:XX|DD)\s+(?:månad|20XX|202[0-9])\b",
+        flags=re.IGNORECASE,
+    )
+    _REFERENCE_START_RE = re.compile(
+        r"^\s*(?:(?:se\s+(?:även\s+)?(?:till\s+exempel\s+)?)?"
+        r"(?:IAF\s+20\d{2}:\d+|JO[ -]?(?:beslut|protokoll)|"
+        r"Justitieombudsmannens\s+(?:protokoll|beslut)|"
+        r"Arbetsförmedlingens\s+(?:handläggarstöd|handbok|yttrande|"
+        r"rättsliga ställningstagande|svar|skriftliga svar)|"
+        r"(?:Prop\.|Proposition|SOU|Ds)\s+\d{4}|"
+        r"\d+\s*(?:kap\.\s*\d+\s*)?§§?\s+|"
+        r"(?:Förordning|Förvaltningslag|Lag)\s*\(\d{4}:\d+\)))",
+        flags=re.IGNORECASE,
+    )
+
+    def _protected_source_reason(self, s: SuggestedChange) -> Optional[str]:
+        element = self._get_docx_element_by_id(s.element_id)
+        if element is None:
+            return None
+        source = (element.get("text") or "").strip()
+        if not source:
+            return None
+        if self._is_in_source_section(element):
+            return "protected_bibliography_section"
+        if any(phrase in source.casefold() for phrase in self._TEMPLATE_PHRASES):
+            return "protected_template_text"
+        if self._TEMPLATE_PLACEHOLDER_RE.search(source):
+            return "protected_template_placeholder"
+        if s.element_type == "footnote" and self._REFERENCE_START_RE.search(source):
+            return "protected_reference_footnote"
+        return None
+
+    def _is_in_source_section(self, element: dict) -> bool:
+        order = element.get("doc_order")
+        if not isinstance(order, int):
+            return False
+        # Huvuddokumentets doc_order är den stabila läsordningen, även när
+        # förteckningen innehåller tabeller eller sidbrytningar. En rubrik på
+        # samma/högre nivå avslutar förteckningen.
+        active_level = None
+        for item in sorted(
+            self.json_structured_document.get("elements", []),
+            key=lambda entry: entry.get("doc_order") if isinstance(entry.get("doc_order"), int) else float("inf"),
+        ):
+            item_order = item.get("doc_order")
+            if not isinstance(item_order, int) or item_order > order:
+                break
+            level = item.get("heading_level")
+            if isinstance(level, int):
+                if item.get("text", "").strip().casefold().rstrip(":") in self._SOURCE_HEADINGS:
+                    active_level = level
+                elif active_level is not None and level <= active_level:
+                    active_level = None
+        return active_level is not None
 
     def _similarity_ratio(self, old: str, new: str) -> float:
         # Character sequences longer than 200 characters trigger
