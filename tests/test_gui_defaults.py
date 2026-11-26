@@ -54,7 +54,7 @@ class GuiDefaultsTests(unittest.TestCase):
         slider = self.inputs["editLevel"]
         self.assertEqual(slider["type"], "range")
         self.assertEqual((slider["min"], slider["max"], slider["step"], slider["value"]),
-                         ("1", "100", "1", "50"))
+                         ("1", "100", "1", "70"))
         self.assertIn("disabled", slider)  # Aktiveras när /config har laddats
         self.assertIn("editLevelScope", slider["aria-describedby"])
         script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")

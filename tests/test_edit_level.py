@@ -27,7 +27,7 @@ def test_config():
     response = TestClient(main.app).get('/config')
     assert response.status_code == 200
     assert response.json()['edit_level'] == edit_level_config()
-    assert edit_level_config()['default'] == 50
+    assert edit_level_config()['default'] == 70
 
 
 @pytest.mark.parametrize('level', ['0', '101', '-1', '50.5', 'abc'])
@@ -40,7 +40,7 @@ def test_invalid_upload(level):
     logger.assert_not_called()
 
 
-@pytest.mark.parametrize('level,key', [(None,None), (50,'balanced'), (81,'very_thorough')])
+@pytest.mark.parametrize('level,key', [(None,None), (50,'balanced'), (70,'thorough'), (81,'very_thorough')])
 def test_upload_passes_level_and_builds_local_prompt(tmp_path, monkeypatch, level, key):
     for name in ('UPLOAD_DIR','RESULTS_DIR','LOG_DIR'):
         directory = tmp_path / name
@@ -118,3 +118,28 @@ def test_local_suggestor_receives_profile_and_reports_usage(tmp_path, level, suc
         improver._generate_suggestions()
         assert mock.call_args.kwargs['prompt_policy'] == build_local_prompt('base policy', level)
     assert improver.run_summary.edit_level_applied is expected
+
+
+def test_profiles_are_cumulative_and_share_assessment_definitions():
+    from app.src.JBGEditLevel import PRIORITY_DEFINITIONS, PROFILES, REVIEW_GUARDRAILS
+    from app.src.JBGModelAssessment import assessment_prompt
+    previous = []
+    for profile in PROFILES:
+        criteria = PROMPT_PROFILES[profile.key].splitlines()
+        assert criteria[:-1] == previous
+        assert len(criteria) == len(previous) + 1
+        previous = criteria
+        assert REVIEW_GUARDRAILS in build_local_prompt('base', profile.max_level)
+    for key in ('critical', 'significant', 'moderate', 'minor'):
+        assert PRIORITY_DEFINITIONS[key] in PROMPT_PROFILES[PROFILES[-1].key]
+    for definition in PRIORITY_DEFINITIONS.values():
+        assert definition in assessment_prompt()
+    assert PRIORITY_DEFINITIONS['cosmetic'] not in PROMPT_PROFILES[PROFILES[-1].key]
+
+
+def test_default_profile_matches_static_gui():
+    from app.src.JBGEditLevel import DEFAULT_LEVEL
+    profile = get_edit_profile(DEFAULT_LEVEL)
+    html = (Path(main.BASE_DIR) / 'templates' / 'index.html').read_text(encoding='utf-8')
+    assert f'{DEFAULT_LEVEL} av 100 – {profile.name}' in html
+    assert profile.description in html

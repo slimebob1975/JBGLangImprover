@@ -69,3 +69,12 @@ def test_prompt_opt_in_and_no_safety_override():
     assert 'model_assessment' in ai.policy_prompt
     item = dict(raw(), old='not present', model_assessment=ASSESSMENT, safe_to_apply=True)
     assert ai._postprocess_suggestions([item]) == []
+
+
+def test_assessment_prompt_uses_independent_risk_and_priority():
+    from app.src.JBGModelAssessment import assessment_prompt
+    prompt = assessment_prompt()
+    assert 'oberoende av nivå' in prompt
+    assert 'avgör inte i sig prioriteten' in prompt
+    assert 'Bedöm risken separat' in prompt
+    assert 'klassificera inte osäker tolkning som low' in prompt

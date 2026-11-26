@@ -2,7 +2,12 @@
 from dataclasses import dataclass
 from typing import Optional
 
-PRIORITIES = ("critical", "significant", "moderate", "minor", "cosmetic")
+try:
+    from app.src.JBGEditLevel import PRIORITY_DEFINITIONS
+except ImportError:
+    from JBGEditLevel import PRIORITY_DEFINITIONS
+
+PRIORITIES = tuple(PRIORITY_DEFINITIONS)
 CATEGORIES = ("correctness", "clarity", "complex_expression", "sentence_structure",
               "precision", "redundancy", "terminology", "typography", "other")
 CONFIDENCE = ("high", "medium", "low")
@@ -39,12 +44,18 @@ def assessment_prompt() -> str:
         "Behåll den befintliga JSON-listan och alla tidigare obligatoriska fält. "
         "Lägg till objektet model_assessment i varje redan motiverat ändringsförslag. "
         "Bedöm förslaget oberoende av vald bearbetningsnivå. "
-        "priority: critical (uppenbart allvarligt språkfel eller förståelsehinder), "
-        "significant (tydlig betydande förbättring), moderate (konkret normal förbättring), "
-        "minor (liten konkret förbättring), cosmetic (enbart ytlig detalj). "
+        "Samma konkreta ingrepp ska få samma prioritet oberoende av nivå, kategori eller spannlängd. "
+        "En obligatorisk terminologiregel avgör inte i sig prioriteten. "
+        "Bedöm varje självständigt ingrepp för sig, inte nyttan av en samling ändringar. "
+        "priority: " + "; ".join(f"{key} ({definition})" for key, definition in PRIORITY_DEFINITIONS.items()) + ". "
         "category: " + ", ".join(CATEGORIES) + ". "
-        "confidence: high, medium eller low (säkerhet om nyttan och korrektheten). "
-        "meaning_risk: low, medium eller high (risk för betydelseförskjutning). "
+        "confidence: high (välgrundad nytta och korrekthet), medium (viss osäkerhet), "
+        "low (otillräckligt stöd). Hög säkerhet kräver kontroll av hela den ändrade formuleringen i sitt sammanhang. "
+        "meaning_risk: low (ingen identifierad betydelseförskjutning efter kontroll), "
+        "medium (rimlig möjlighet till betydelseförskjutning eller osäker tolkning), "
+        "high (sannolik eller tydlig betydelseförskjutning). Bedöm särskilt modalitet, "
+        "statistiska gränser, osäkerhetsmarkörer, villkor, fackbegrepp och rättsliga avgränsningar. "
+        "Bedöm risken separat från confidence och priority; klassificera inte osäker tolkning som low. "
         "requires_rewrite: true om en större omformulering av meningsbyggnaden krävs, annars false. "
         'Exempel: "model_assessment": {"priority":"significant","category":"complex_expression",'
         '"confidence":"high","meaning_risk":"low","requires_rewrite":false}. '
