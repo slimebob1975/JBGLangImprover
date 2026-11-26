@@ -61,6 +61,18 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertNotIn('formData.append("edit_level"', script)
         self.assertIn('"editablePrompt", "editLevel", "temperature"', script)
 
+    def test_edit_level_compact_tooltip(self):
+        html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "styles" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('role="tooltip" id="editLevelTooltip"', html)
+        self.assertIn('id="editLevelTooltipValue"', html)
+        self.assertIn('display.textContent = name;', script)
+        self.assertIn('slider.setAttribute("aria-valuetext", tooltipValue.textContent)', script)
+        self.assertIn(':focus-within .edit-level-tooltip', css)
+        self.assertIn(':hover .edit-level-tooltip', css)
+        self.assertIn('event.key === "Escape"', script)
+
     def test_python_renderer_defaults_to_word_level(self):
         from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
         from app.src.JBGLanguageImprover import JBGLanguageImprover

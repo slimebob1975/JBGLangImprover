@@ -58,14 +58,25 @@ function initEditLevel() {
     const slider = document.getElementById("editLevel");
     const display = document.getElementById("editLevelDisplay");
     const description = document.getElementById("editLevelDescription");
-    if (!slider || !display || !description) return;
+    const tooltipValue = document.getElementById("editLevelTooltipValue");
+    if (!slider || !display || !description || !tooltipValue) return;
     function update() {
         const [name, text] = getEditLevelProfile(Number(slider.value));
-        display.textContent = `${slider.value} av 100 – ${name}`;
+        display.textContent = name;
+        tooltipValue.textContent = `${slider.value} av 100 – ${name}`;
         description.textContent = text;
-        slider.setAttribute("aria-valuetext", display.textContent);
+        slider.setAttribute("aria-valuetext", tooltipValue.textContent);
     }
+    const container = slider.closest(".edit-level-slider");
     slider.addEventListener("input", update);
+    if (container) {
+        container.addEventListener("pointerenter", () => container.classList.remove("tooltip-dismissed"));
+        slider.addEventListener("focus", () => container.classList.remove("tooltip-dismissed"));
+        slider.addEventListener("input", () => container.classList.remove("tooltip-dismissed"));
+        document.addEventListener("keydown", event => {
+            if (event.key === "Escape") container.classList.add("tooltip-dismissed");
+        });
+    }
     update();
 }
 
