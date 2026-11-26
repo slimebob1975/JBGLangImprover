@@ -55,10 +55,11 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertEqual(slider["type"], "range")
         self.assertEqual((slider["min"], slider["max"], slider["step"], slider["value"]),
                          ("1", "100", "1", "50"))
-        self.assertNotIn("name", slider)  # GUI-prototypen skickar ingen ny parameter
+        self.assertIn("disabled", slider)  # Aktiveras när /config har laddats
         self.assertIn("editLevelPreview", slider["aria-describedby"])
         script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
-        self.assertNotIn('formData.append("edit_level"', script)
+        self.assertEqual(script.count('formData.append("edit_level"'), 2)
+        self.assertIn("editLevelConfig.profiles.find", script)
         self.assertIn('"editablePrompt", "editLevel", "temperature"', script)
 
     def test_edit_level_compact_tooltip(self):
@@ -90,6 +91,7 @@ class GuiDefaultsTests(unittest.TestCase):
         defaults = {name: p.default.default for name, p in inspect.signature(main.upload_file).parameters.items()
                     if hasattr(p.default, "default")}
         self.assertEqual(defaults["docx_mode"], "tracked")
+        self.assertIsNone(defaults["edit_level"])
         self.assertNotIn("word_level_changes", defaults)
         self.assertNotIn("word_level_changes", inspect.signature(main.upload_file).parameters)
 

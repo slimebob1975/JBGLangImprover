@@ -53,6 +53,11 @@ class RunSummary:
     # LIX som kommentar vid titeln, när avsnittet Om klarspråkningen inte läggs till
     lix_comment: Optional[dict[str, Any]] = None
 
+    # Selected level is recorded, but does not affect prompts or filtering yet.
+    edit_level: Optional[int] = None
+    edit_profile: Optional[str] = None
+    edit_level_applied: bool = False
+
     def finish(self, succeeded: bool, error: Optional[str] = None) -> None:
         self.finished_at = _now()
         self.succeeded = succeeded

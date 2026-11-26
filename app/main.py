@@ -16,6 +16,7 @@ import time
 from app.src.JBGLanguageImprover import JBGLanguageImprover
 from app.src.JBGDataRetention import delete_files, keep_debug_data, run_file_paths
 from app.src.JBGBuildInfo import get_build_info
+from app.src.JBGEditLevel import MIN_LEVEL, MAX_LEVEL, edit_level_config, get_edit_profile
 import uuid
 
 KEEP_FILES_DAYS = 0
@@ -210,7 +211,7 @@ app.add_middleware(FrameOptionsMiddleware)
 def get_config():
     title = os.getenv("APP_TITLE", "JBG Klarspråkning")
     print(f" Appens titel: {title}")
-    return {"title": title, "version": get_build_info()}
+    return {"title": title, "version": get_build_info(), "edit_level": edit_level_config()}
 
 # Maximal längd på visat användarnamn (skydd mot orimliga rubrikvärden)
 MAX_USER_DISPLAY_CHARS = 200
@@ -248,7 +249,9 @@ async def upload_file(
     include_about_section: bool = Form(False),
     compute_lix: bool = Form(False),
     global_review: bool = Form(False),
+    edit_level: int | None = Form(None, ge=MIN_LEVEL, le=MAX_LEVEL),
 ):
+    edit_profile = get_edit_profile(edit_level)
     # Generate job ID and paths
     job_id = str(uuid.uuid4())
     input_path = os.path.join(UPLOAD_DIR, job_id + "_" + file.filename)
@@ -278,6 +281,8 @@ async def upload_file(
     logger.info(f"ℹ️ Include 'Om klarspråkningen' section: {include_about_section}")
     logger.info(f"📊 Compute LIX: {compute_lix}")
     logger.info(f"🌐 Global review: {global_review}")
+    logger.info("Edit level: %s; profile: %s; applied: False",
+                edit_level, edit_profile.key if edit_profile else None)
     logger.info("Word-level tracked changes enabled by default (safe span fallback)")
 
     # Extract prompt parts and validate
@@ -311,6 +316,7 @@ async def upload_file(
                 compute_readability=compute_lix,
                 global_review=global_review,
                 word_level_changes=True,
+                edit_level=edit_level,
             )
             result = improver.run()
             shutil.move(result, output_path)

@@ -16,6 +16,7 @@ try:
     from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
     from app.src.JBGUsageTracker import UsageTracker
     from app.src.JBGRunSummary import RunSummary
+    from app.src.JBGEditLevel import get_edit_profile
     from app.src.JBGBuildInfo import get_build_info
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
     from JBGTrackedChangesRenderer import TrackedChangesRenderer
     from JBGUsageTracker import UsageTracker
     from JBGRunSummary import RunSummary
+    from JBGEditLevel import get_edit_profile
     from JBGBuildInfo import get_build_info
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -76,6 +78,7 @@ class JBGLanguageImprover:
         compute_readability=True,
         global_review=False,
         word_level_changes=True,
+        edit_level=None,
         **kwargs,
     ):
         self.input_path = input_path
@@ -94,6 +97,8 @@ class JBGLanguageImprover:
         self.global_review = bool(global_review)
         self.word_level_changes = bool(word_level_changes)
         self.extra_kwargs = kwargs
+        self.edit_level = edit_level
+        self.edit_profile = get_edit_profile(edit_level)
 
         if self.docx_mode not in {"simple", "tracked"}:
             raise ValueError(f"Unsupported docx_mode: {self.docx_mode}")
@@ -129,6 +134,8 @@ class JBGLanguageImprover:
             prompt_customized=prompt_customized,
             compute_readability=self.compute_readability,
             global_review=self.global_review,
+            edit_level=self.edit_level,
+            edit_profile=self.edit_profile.key if self.edit_profile else None,
         )
         build = get_build_info()
         self.run_summary.app_version = build["version"]

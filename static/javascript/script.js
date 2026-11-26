@@ -1,9 +1,17 @@
-fetch("/config")
-  .then(res => res.json())
+const configReady = fetch("/config")
+  .then(res => {
+    if (!res.ok) throw new Error("Config request failed");
+    return res.json();
+  })
   .then(data => {
     document.title = data.title;
     document.getElementById("app-title").innerText = data.title;
     showVersion(data.version);
+    return data.edit_level;
+  })
+  .catch(err => {
+    console.warn("Kunde inte hämta bearbetningsnivåer:", err);
+    return null;
   });
 
 // Version, commit och miljö under rubriken, t.ex. "Version 1.0.0 · a1b2c3d (dev)".
@@ -45,25 +53,31 @@ fetch("/me")
   })
   .catch(err => console.warn("Kunde inte hämta användarinformation:", err));
 
-// GUI-prototyp. Nivån skickas inte till servern förrän API-kontraktet finns.
+// The API owns the profile boundaries and descriptions.
+let editLevelConfig = null;
 function getEditLevelProfile(level) {
-    if (level <= 20) return ["Mycket varsam", "Åtgärdar bara tydliga och viktiga klarspråksproblem."];
-    if (level <= 40) return ["Varsam", "Åtgärdar tydliga problem och låter fungerande formuleringar vara."];
-    if (level <= 60) return ["Balanserad", "Förbättrar tydlighet, meningsbyggnad och läsbarhet när det behövs."];
-    if (level <= 80) return ["Noggrann", "Uppmärksammar även mindre språkliga brister och onödig komplexitet."];
-    return ["Mycket noggrann", "Granskar även subtila språkliga detaljer när ändringen ger tydlig nytta."];
+    return editLevelConfig.profiles.find(profile => level <= profile.max_level);
 }
 
-function initEditLevel() {
+async function initEditLevel() {
     const slider = document.getElementById("editLevel");
     const display = document.getElementById("editLevelDisplay");
     const description = document.getElementById("editLevelDescription");
     const tooltipValue = document.getElementById("editLevelTooltipValue");
     if (!slider || !display || !description || !tooltipValue) return;
+    editLevelConfig = await configReady;
+    if (!editLevelConfig) {
+        display.textContent = "Ej tillgänglig";
+        return;
+    }
+    slider.min = editLevelConfig.min;
+    slider.max = editLevelConfig.max;
+    slider.value = editLevelConfig.default;
+    slider.disabled = false;
     function update() {
-        const [name, text] = getEditLevelProfile(Number(slider.value));
+        const {name, description: text} = getEditLevelProfile(Number(slider.value));
         display.textContent = name;
-        tooltipValue.textContent = `${slider.value} av 100 – ${name}`;
+        tooltipValue.textContent = `${slider.value} av ${editLevelConfig.max} – ${name}`;
         description.textContent = text;
         slider.setAttribute("aria-valuetext", tooltipValue.textContent);
     }
@@ -169,6 +183,11 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
         return;
     }
 
+    if (!editLevelConfig) {
+        updateStatus("Bearbetningsnivåerna kunde inte laddas. Ladda om sidan.", "status-error");
+        return;
+    }
+
     lockUI();
     updateStatus("🔄 Bearbetar dokument...", "status-info");
 
@@ -177,6 +196,7 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     formData.append("api_key", apiKey);
     formData.append("model", model);
     formData.append("editable_prompt", editablePrompt);
+    if (editLevelConfig) formData.append("edit_level", document.getElementById("editLevel").value);
     formData.append("temperature", temperature);
     formData.append("include_motivations", includeMotivations);
     formData.append("docx_mode", docxMode);
@@ -190,6 +210,7 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
             body: formData
         });
 
+        if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
         const { job_id, original_filename } = await res.json();
         pollForResult(job_id, original_filename);
 
@@ -330,6 +351,7 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
     formData.append("api_key", apiKey);
     formData.append("model", model);
     formData.append("editable_prompt", editablePrompt);
+    if (editLevelConfig) formData.append("edit_level", document.getElementById("editLevel").value);
     formData.append("temperature", temperature);
     formData.append("include_motivations", includeMotivations);
     formData.append("docx_mode", docxMode);
