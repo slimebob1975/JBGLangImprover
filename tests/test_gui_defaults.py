@@ -50,6 +50,17 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertNotIn("wordLevelChanges", script)
         self.assertNotIn('formData.append("word_level_changes"', script)
 
+    def test_edit_level_preview_defaults(self):
+        slider = self.inputs["editLevel"]
+        self.assertEqual(slider["type"], "range")
+        self.assertEqual((slider["min"], slider["max"], slider["step"], slider["value"]),
+                         ("1", "100", "1", "50"))
+        self.assertNotIn("name", slider)  # GUI-prototypen skickar ingen ny parameter
+        self.assertIn("editLevelPreview", slider["aria-describedby"])
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        self.assertNotIn('formData.append("edit_level"', script)
+        self.assertIn('"editablePrompt", "editLevel", "temperature"', script)
+
     def test_python_renderer_defaults_to_word_level(self):
         from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
         from app.src.JBGLanguageImprover import JBGLanguageImprover

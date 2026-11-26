@@ -42,6 +42,18 @@
                 <option value="gpt-4o">gpt-4o</option>
             </select>
 
+            <!-- Bearbetningsniva: GUI-prototyp, kopplas till backend i senare patch. -->
+            <div class="edit-level-control">
+                <label for="editLevel">Hur noggrant ska texten bearbetas?</label>
+                <input type="range" id="editLevel" min="1" max="100" step="1" value="50"
+                       aria-describedby="editLevelDescription editLevelHelp editLevelPreview">
+                <div class="edit-level-scale" aria-hidden="true"><span>Färre ingrepp</span><span>Mer ingående</span></div>
+                <output id="editLevelDisplay" for="editLevel">50 av 100 – Balanserad</output>
+                <p id="editLevelDescription">Förbättrar tydlighet, meningsbyggnad och läsbarhet när det behövs.</p>
+                <p id="editLevelHelp">Högre nivå innebär fler möjliga förbättringar, inte att texten måste ändras mer.</p>
+                <p id="editLevelPreview">Förhandsvisning: inställningen påverkar ännu inte språkgranskningen.</p>
+            </div>
+
             <label for="editablePrompt" title="Instruktionen styr förslagen inom enskilda stycken, tabellceller, textrutor, fotnoter, sidhuvuden och sidfötter. Den påverkar inte granskningen av dokumentet som helhet. Ändra standardtexten om du vill ge särskilda instruktioner.">Anpassa den lokala promptinstruktionen:</label>
             <textarea id="editablePrompt" name="editablePrompt" rows="6" placeholder="Laddar policy..." required></textarea>
             </fieldset>

@@ -289,3 +289,33 @@ form button:disabled:hover {
     text-align: center;
     margin-top: 12px;
 }
+
+/* Bearbetningsnivå */
+.edit-level-control {
+    margin: 1rem 0;
+}
+.edit-level-control input[type="range"] {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    accent-color: #005293;
+}
+.edit-level-scale {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: #555;
+}
+#editLevelDisplay {
+    display: block;
+    font-weight: 600;
+    margin-top: 0.5rem;
+}
+.edit-level-control p {
+    font-size: 0.85rem;
+    margin: 0.4rem 0;
+}
+#editLevelHelp, #editLevelPreview {
+    color: #555;
+}

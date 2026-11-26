@@ -45,8 +45,33 @@ fetch("/me")
   })
   .catch(err => console.warn("Kunde inte hämta användarinformation:", err));
 
+// GUI-prototyp. Nivån skickas inte till servern förrän API-kontraktet finns.
+function getEditLevelProfile(level) {
+    if (level <= 20) return ["Mycket varsam", "Åtgärdar bara tydliga och viktiga klarspråksproblem."];
+    if (level <= 40) return ["Varsam", "Åtgärdar tydliga problem och låter fungerande formuleringar vara."];
+    if (level <= 60) return ["Balanserad", "Förbättrar tydlighet, meningsbyggnad och läsbarhet när det behövs."];
+    if (level <= 80) return ["Noggrann", "Uppmärksammar även mindre språkliga brister och onödig komplexitet."];
+    return ["Mycket noggrann", "Granskar även subtila språkliga detaljer när ändringen ger tydlig nytta."];
+}
+
+function initEditLevel() {
+    const slider = document.getElementById("editLevel");
+    const display = document.getElementById("editLevelDisplay");
+    const description = document.getElementById("editLevelDescription");
+    if (!slider || !display || !description) return;
+    function update() {
+        const [name, text] = getEditLevelProfile(Number(slider.value));
+        display.textContent = `${slider.value} av 100 – ${name}`;
+        description.textContent = text;
+        slider.setAttribute("aria-valuetext", display.textContent);
+    }
+    slider.addEventListener("input", update);
+    update();
+}
+
 // Load saved API key from localStorage on page load
 document.addEventListener("DOMContentLoaded", () => {
+    initEditLevel();
     const savedKey = localStorage.getItem("openai_api_key");
     if (savedKey) {
       document.getElementById("apiKey").value = savedKey;
@@ -244,7 +269,7 @@ function updateStatus(message, className) {
 // klar eller har misslyckats. En ny körning kräver att sidan laddas om
 // (se tipset om Ctrl-Shift-R i sidfoten).
 function lockUI() {
-    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
+    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "editLevel", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
     ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = true;
