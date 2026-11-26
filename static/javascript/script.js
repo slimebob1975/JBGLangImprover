@@ -189,7 +189,7 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
     }
 
     lockUI();
-    updateStatus("🔄 Bearbetar dokument...", "status-info");
+    startProcessing();
 
     const formData = new FormData();
     formData.append("file", file);
@@ -212,66 +212,56 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
 
         if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
         const { job_id, original_filename } = await res.json();
-        pollForResult(job_id, original_filename);
+        if (!job_id || !original_filename) throw new Error("Invalid upload response");
+        await pollForResult(job_id, original_filename);
 
     } catch (err) {
         console.error(err);
         updateStatus("❌ Tekniskt fel vid överföring.", "status-error");
+    } finally {
+        stopProcessing();
     }
 });
 
+// Poll sequentially so slow responses cannot trigger duplicate downloads.
 async function pollForResult(jobId, originalFilename) {
-    const spinner = document.getElementById("spinner-container");
-    spinner.style.display = "block";
-
-    const interval = setInterval(async () => {
-        console.log(`Kollar status för job ID: ${jobId}...`);
+    let consecutiveFailures = 0;
+    while (true) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
         try {
             const res = await fetch(`/status/${jobId}`);
             const data = await res.json();
-
-            // Show status message if present
-            if (data.status) {
-                updateStatus(data.status, "status-info");
-            }
-
-            // Error from server
             if (data.error) {
-                clearInterval(interval);
-                console.warn(`Jobb ${jobId} rapporterade fel:`, data.error);
-                updateStatus(
-                    data.status || "Ett fel uppstod vid språkgranskningen.",
-                    "status-error"
-                );
-                spinner.style.display = "none";
+                updateStatus(data.status || "Ett fel uppstod vid språkgranskningen.", "status-error");
                 return;
             }
-
-            // Not done yet
-            if (data.done === false) {
-                console.log(`Jobb ${jobId} är fortfarande under bearbetning...`);
-                return; // keep polling
+            if (!res.ok || typeof data.done !== "boolean") {
+                throw new Error("Invalid status response");
             }
-
-            // Done
-            if (data.done === true) {
-                console.log(`Jobb ${jobId} är klart. Startar nedladdning.`);
-                clearInterval(interval);
+            consecutiveFailures = 0;
+            if (data.done) {
+                updateStatus("Hämtar resultatfilen…", "status-info");
                 await downloadResult(jobId, originalFilename);
                 return;
             }
-
-            // Fallback if response shape is unexpected
-            console.warn("Oväntat svar från /status:", data);
+            updateStatus(data.status || "Dokumentet granskas och bearbetas.", "status-info");
         } catch (err) {
             console.warn(`Misslyckades med att hämta status för ${jobId}:`, err);
+            if (++consecutiveFailures >= 3) {
+                updateStatus("Kunde inte hämta status. Bearbetningen kan fortfarande pågå på servern.", "status-error");
+                return;
+            }
+            updateStatus("Kontakten med tjänsten bröts. Försöker igen…", "status-info");
         }
-    }, 5000);  // Poll every 5 seconds (adjust if you like)
+    }
 }
 
 async function downloadResult(jobId, originalFilename) {
     try {
         const response = await fetch(`/download/${jobId}`);
+        if (!response.ok || !response.headers.get("content-type")?.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) {
+            throw new Error("Invalid download response");
+        }
         const blob = await response.blob();
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
@@ -286,12 +276,44 @@ async function downloadResult(jobId, originalFilename) {
     } catch (err) {
         console.error("Download failed:", err);
         updateStatus("❌ Kunde inte hämta resultatfil.", "status-error");
-    } finally {
-        document.getElementById("spinner-container").style.display = "none";
     }
 }
 
+let processingTimer = null;
+
+function startProcessing() {
+    stopProcessing();
+    const overlay = document.getElementById("spinner-container");
+    const form = document.getElementById("uploadForm");
+    const started = performance.now();
+    const elapsed = document.getElementById("processingElapsed");
+    document.getElementById("status").textContent = "";
+    document.getElementById("processingDetail").textContent = "Dokumentet skickas till tjänsten…";
+    document.getElementById("processingLevel").textContent =
+        `Bearbetningsnivå: ${document.getElementById("editLevelDisplay").textContent}`;
+    function tick() {
+        const seconds = Math.floor((performance.now() - started) / 1000);
+        elapsed.textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    }
+    tick();
+    form.setAttribute("aria-busy", "true");
+    overlay.hidden = false;
+    processingTimer = setInterval(tick, 1000);
+}
+
+function stopProcessing() {
+    if (processingTimer !== null) clearInterval(processingTimer);
+    processingTimer = null;
+    document.getElementById("spinner-container").hidden = true;
+    document.getElementById("uploadForm").removeAttribute("aria-busy");
+}
+
 function updateStatus(message, className) {
+    if (className === "status-info" && !document.getElementById("spinner-container").hidden) {
+        const detail = document.getElementById("processingDetail");
+        if (detail.textContent !== message) detail.textContent = message;
+        return;
+    }
     const status = document.getElementById("status");
     status.className = className;
     status.textContent = message;
@@ -334,7 +356,6 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
 
 
     const status = document.getElementById("status");
-    const spinner = document.getElementById("spinner-container");
 
     if (!file || !apiKey) {
         status.className = "status-error";
@@ -342,9 +363,8 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
         return;
     }
 
-    status.className = "status-info";
-    status.textContent = "🔄 Bearbetar dokument...";
-    spinner.style.display = "block";
+    lockUI();
+    startProcessing();
 
     const formData = new FormData();
     formData.append("file", file);
@@ -384,7 +404,7 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
         status.className = "status-error";
         status.textContent = "❌ Tekniskt fel vid överföring.";
     } finally {
-        spinner.style.display = "none";
+        stopProcessing();
     }
 });
     

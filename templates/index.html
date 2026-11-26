@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="sv">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -117,11 +117,17 @@
             <!-- The start button!!! -->
             <button id="button" name="button" type="submit" title="Börja din språkgranskning!">Starta</button>
         </form>
-        <!-- A spinner that spins while executing -->
-        <div id="spinner-container">
-            <div class="spinner"></div>
+        <!-- Overlagget ligger utanfor det normala dokumentflodet. -->
+        <div id="spinner-container" hidden>
+            <div class="processing-card">
+                <div class="spinner" aria-hidden="true"></div>
+                <p class="processing-title" role="status" id="processingStatus">Klarspråkning pågår</p>
+                <p id="processingDetail" role="status"></p>
+                <p id="processingLevel"></p>
+                <p class="processing-time">Förfluten tid: <span id="processingElapsed">00:00</span></p>
+            </div>
         </div>
-        <p id="status"></p>
+        <p id="status" role="status"></p>
 
     </div> <!-- Wrapper -->
      <footer style="margin-top: 16px; font-size: 0.9em; color: #555; text-align: center; line-height: 1.5;">

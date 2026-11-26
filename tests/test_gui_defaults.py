@@ -74,6 +74,25 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertIn(':hover .edit-level-tooltip', css)
         self.assertIn('event.key === "Escape"', script)
 
+    def test_processing_overlay_is_hidden_and_out_of_flow(self):
+        html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "styles" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('id="spinner-container" hidden', html)
+        self.assertIn('id="processingElapsed"', html)
+        self.assertIn('role="status" id="processingStatus"', html)
+        self.assertRegex(css, r"#spinner-container\s*\{\s*position: absolute;\s*inset: 0;")
+        self.assertIn("#spinner-container[hidden]", css)
+        self.assertIn("prefers-reduced-motion: reduce", css)
+
+    def test_processing_overlay_lifecycle(self):
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        self.assertIn("lockUI();\n    startProcessing();", script)
+        self.assertIn("await pollForResult(job_id, original_filename);", script)
+        self.assertEqual(script.count("} finally {\n        stopProcessing();"), 2)
+        self.assertIn("clearInterval(processingTimer)", script)
+        self.assertIn('form.setAttribute("aria-busy", "true")', script)
+        self.assertIn('removeAttribute("aria-busy")', script)
+
     def test_python_renderer_defaults_to_word_level(self):
         from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
         from app.src.JBGLanguageImprover import JBGLanguageImprover

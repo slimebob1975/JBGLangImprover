@@ -11,6 +11,8 @@ body {
 
 /* === Wrapper === */
 #wrapper {
+    position: relative;
+    isolation: isolate;
     background-color: #fff;
     padding: 1.25rem 2rem;
     border-radius: 8px;
@@ -266,28 +268,70 @@ form button:disabled:hover {
     color: #005293; /* anpassat till IAF-blå */
 }
 
-/* === Laddningssymbol === */
+/* Bearbetningsöverlägg: påverkar inte appens höjd eller bredd. */
+#spinner-container {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    border-radius: inherit;
+    background: rgba(242, 242, 242, 0.82);
+}
+
+#spinner-container[hidden] {
+    display: none;
+}
+
+.processing-card {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    box-sizing: border-box;
+    width: min(340px, calc(100% - 48px));
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    padding: 1.5rem 1rem;
+    border: 1px solid #dbe3ea;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.processing-card p {
+    margin: 0.65rem 0 0;
+    font-size: 0.9rem;
+    color: #555;
+}
+
+.processing-card .processing-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #005293;
+}
+
+.processing-time {
+    font-variant-numeric: tabular-nums;
+}
+
 .spinner {
-    border: 8px solid #f3f3f3;
-    /* border-top: 8px solid green; */ /* Tidigare */
-    border-top: 8px solid #005293;
+    box-sizing: border-box;
+    border: 4px solid #dbe3ea;
+    border-top-color: #005293;
     border-radius: 50%;
     width: 40px;
     height: 40px;
     animation: spin 1s linear infinite;
-    margin: auto;
+    margin: 0 auto 1rem;
 }
 
 @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    to { transform: rotate(360deg); }
 }
 
-/* === Centrering av spinner === */
-#spinner-container {
-    display: none;
-    text-align: center;
-    margin-top: 12px;
+@media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
 }
 
 /* Bearbetningsnivå */
