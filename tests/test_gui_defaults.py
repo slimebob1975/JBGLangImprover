@@ -50,13 +50,13 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertNotIn("wordLevelChanges", script)
         self.assertNotIn('formData.append("word_level_changes"', script)
 
-    def test_edit_level_preview_defaults(self):
+    def test_edit_level_defaults(self):
         slider = self.inputs["editLevel"]
         self.assertEqual(slider["type"], "range")
         self.assertEqual((slider["min"], slider["max"], slider["step"], slider["value"]),
                          ("1", "100", "1", "50"))
         self.assertIn("disabled", slider)  # Aktiveras när /config har laddats
-        self.assertIn("editLevelPreview", slider["aria-describedby"])
+        self.assertIn("editLevelScope", slider["aria-describedby"])
         script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
         self.assertEqual(script.count('formData.append("edit_level"'), 2)
         self.assertIn("editLevelConfig.profiles.find", script)

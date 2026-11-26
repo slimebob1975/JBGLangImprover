@@ -37,9 +37,11 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import DocxPackage
     from app.src.JBGRevisionIds import max_revision_id
+    from app.src.JBGEditLevel import get_edit_profile
 except ModuleNotFoundError:
     from JBGDocxPackage import DocxPackage
     from JBGRevisionIds import max_revision_id
+    from JBGEditLevel import get_edit_profile
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -276,6 +278,18 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             "Promptinstruktion",
             "anpassad för den här granskningen" if prompt_customized else "standard",
         ))
+
+    level = summary.get("edit_level")
+    if level is not None:
+        profile = get_edit_profile(level)
+        blocks.append(_item("Bearbetningsnivå", f"{level} av 100 – {profile.name}"))
+        if summary.get("edit_level_applied"):
+            blocks.append(AboutBlock("paragraph", [(
+                profile.description + " Nivån styr instruktionen för den lokala språkgranskningen, "
+                "inte antalet ändringar. Skyddsreglerna gäller oförändrat.", False)]))
+        else:
+            blocks.append(AboutBlock("paragraph", [(
+                "Nivån registrerades men tillämpades inte i den lokala granskningen.", False)]))
 
     # --- Tabeller
     blocks.append(_table_title("Anrop och tokens"))

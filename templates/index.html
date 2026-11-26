@@ -42,17 +42,17 @@
                 <option value="gpt-4o">gpt-4o</option>
             </select>
 
-            <!-- Bearbetningsniva: registreras i backend, promptstyrning tillkommer senare. -->
+            <!-- Bearbetningsniva: styr den lokala promptinstruktionen. -->
             <div class="edit-level-control">
-                <label for="editLevel">Bearbetningsnivå <span class="edit-level-preview-label">(förhandsvisning)</span></label>
+                <label for="editLevel">Bearbetningsnivå</label>
                 <div class="edit-level-slider">
                     <input type="range" id="editLevel" min="1" max="100" step="1" value="50" disabled
-                           aria-describedby="editLevelDescription editLevelHelp editLevelPreview">
+                           aria-describedby="editLevelDescription editLevelHelp editLevelScope">
                     <div class="edit-level-tooltip" role="tooltip" id="editLevelTooltip">
                         <strong id="editLevelTooltipValue" aria-hidden="true">50 av 100 – Balanserad</strong>
                         <p id="editLevelDescription">Förbättrar tydlighet, meningsbyggnad och läsbarhet när det behövs.</p>
                         <p id="editLevelHelp">Högre nivå innebär fler möjliga förbättringar, inte att texten måste ändras mer.</p>
-                        <p id="editLevelPreview">Inställningen registreras men påverkar ännu inte språkgranskningen.</p>
+                        <p id="editLevelScope">Nivån styr den lokala språkgranskningen. Skyddsreglerna gäller alltid.</p>
                     </div>
                 </div>
                 <div class="edit-level-scale"><span aria-hidden="true">Färre ingrepp</span><output id="editLevelDisplay" for="editLevel" aria-hidden="true">Balanserad</output><span aria-hidden="true">Mer ingående</span></div>

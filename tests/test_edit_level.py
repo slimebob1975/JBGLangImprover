@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.src.JBGEditLevel import get_edit_profile, edit_level_config
+from app.src.JBGEditLevel import get_edit_profile, edit_level_config, build_local_prompt, PROMPT_PROFILES
 from app.src.JBGLanguageImprover import JBGLanguageImprover
 
 
@@ -41,7 +41,7 @@ def test_invalid_upload(level):
 
 
 @pytest.mark.parametrize('level,key', [(None,None), (50,'balanced'), (81,'very_thorough')])
-def test_upload_passes_level_without_changing_prompt(tmp_path, monkeypatch, level, key):
+def test_upload_passes_level_and_builds_local_prompt(tmp_path, monkeypatch, level, key):
     for name in ('UPLOAD_DIR','RESULTS_DIR','LOG_DIR'):
         directory = tmp_path / name
         directory.mkdir()
@@ -67,4 +67,54 @@ def test_upload_passes_level_without_changing_prompt(tmp_path, monkeypatch, leve
     assert summary['edit_level'] == level
     assert summary['edit_profile'] == key
     assert summary['edit_level_applied'] is False
-    assert improver.prompt_policy == kwargs['prompt_policy']
+    assert improver.prompt_policy == build_local_prompt(kwargs['prompt_policy'], level)
+
+
+@pytest.mark.parametrize('level', [1, 21, 41, 61, 81])
+def test_local_prompt_profile(level):
+    base = 'original policy\nJSON rules'
+    result = build_local_prompt(base, level)
+    assert result.startswith(base + '\n\n')
+    assert PROMPT_PROFILES[get_edit_profile(level).key] in result
+    assert 'JSON-format gäller oförändrat' in result
+    assert 'Skyddsregler' in result or 'skyddsregler' in result
+
+
+def test_legacy_prompt_is_exactly_unchanged():
+    assert build_local_prompt(' original\n', None) == ' original\n'
+
+
+@pytest.mark.parametrize('applied', [True, False])
+def test_about_section_reports_level(applied):
+    from app.src.JBGAboutSectionRenderer import build_about_section_blocks
+    blocks = build_about_section_blocks({'edit_level': 73, 'edit_level_applied': applied}, False)
+    text = '\n'.join(block.text for block in blocks)
+    assert '73 av 100 – Noggrann' in text
+    assert ('tillämpades inte' in text) is (not applied)
+    assert ('Nivån styr instruktionen' in text) is applied
+
+
+def test_about_section_legacy_has_no_level():
+    from app.src.JBGAboutSectionRenderer import build_about_section_blocks
+    assert not any('Bearbetningsnivå' in b.text for b in build_about_section_blocks({}, False))
+
+
+@pytest.mark.parametrize('level,success,expected', [(73, True, True), (73, False, False), (None, True, False)])
+def test_local_suggestor_receives_profile_and_reports_usage(tmp_path, level, success, expected):
+    improver = JBGLanguageImprover(
+        input_path=str(tmp_path / 'test.docx'), api_key='test', model='test',
+        prompt_policy='base policy', temperature=0, include_motivations=False,
+        logger=logging.getLogger(__name__), edit_level=level, save_intermediate_json=False)
+    improver.structure = {}
+    with patch('app.src.JBGLanguageImprover.JBGLangImprovSuggestorAI') as mock:
+        ai = mock.return_value
+        ai.json_suggestions = ai.filtered_review = ai.validated_suggestions = []
+        def simulate():
+            if success:
+                improver.usage_tracker.record('local', 'test', None)
+            else:
+                improver.usage_tracker.record_failure('local', 'test')
+        ai.suggest_changes_token_aware_batching.side_effect = simulate
+        improver._generate_suggestions()
+        assert mock.call_args.kwargs['prompt_policy'] == build_local_prompt('base policy', level)
+    assert improver.run_summary.edit_level_applied is expected

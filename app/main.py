@@ -281,7 +281,7 @@ async def upload_file(
     logger.info(f"ℹ️ Include 'Om klarspråkningen' section: {include_about_section}")
     logger.info(f"📊 Compute LIX: {compute_lix}")
     logger.info(f"🌐 Global review: {global_review}")
-    logger.info("Edit level: %s; profile: %s; applied: False",
+    logger.info("Edit level: %s; profile: %s; selected (local review)",
                 edit_level, edit_profile.key if edit_profile else None)
     logger.info("Word-level tracked changes enabled by default (safe span fallback)")
 

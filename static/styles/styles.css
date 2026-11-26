@@ -16,7 +16,7 @@ body {
     border-radius: 8px;
     /* box-shadow: 0 0 6px rgba(0,0,0,0.1); */ /* Tidigare */
     box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-    max-width: 600px;
+    max-width: 720px;
     margin: 0 auto;
 }
 
@@ -100,7 +100,7 @@ button:hover {
 
 /* === Formulär === */
 form {
-    max-width: 500px;
+    max-width: 620px;
     margin: 0 auto;
     padding: 0;
     /* Tidigare ett eget vitt kort med skugga; nu bär panelerna strukturen */
@@ -125,7 +125,7 @@ form label {
 #wrapper > h3,
 #wrapper > .version-display,
 #wrapper > .user-display {
-    max-width: 500px;
+    max-width: 620px;
     margin-left: auto;
     margin-right: auto;
 }
@@ -294,10 +294,6 @@ form button:disabled:hover {
 .edit-level-control {
     margin: 0.5rem 0;
 }
-.edit-level-preview-label {
-    font-size: 0.8rem;
-    color: #555;
-}
 .edit-level-slider {
     position: relative;
 }
@@ -348,6 +344,6 @@ form button:disabled:hover {
 .edit-level-tooltip p {
     margin: 0.35rem 0 0;
 }
-#editLevelHelp, #editLevelPreview {
+#editLevelHelp, #editLevelScope {
     color: #555;
 }

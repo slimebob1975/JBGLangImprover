@@ -16,7 +16,7 @@ try:
     from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
     from app.src.JBGUsageTracker import UsageTracker
     from app.src.JBGRunSummary import RunSummary
-    from app.src.JBGEditLevel import get_edit_profile
+    from app.src.JBGEditLevel import get_edit_profile, build_local_prompt
     from app.src.JBGBuildInfo import get_build_info
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -35,7 +35,7 @@ except ModuleNotFoundError:
     from JBGTrackedChangesRenderer import TrackedChangesRenderer
     from JBGUsageTracker import UsageTracker
     from JBGRunSummary import RunSummary
-    from JBGEditLevel import get_edit_profile
+    from JBGEditLevel import get_edit_profile, build_local_prompt
     from JBGBuildInfo import get_build_info
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -84,7 +84,7 @@ class JBGLanguageImprover:
         self.input_path = input_path
         self.api_key = api_key
         self.model = model
-        self.prompt_policy = prompt_policy
+        self.prompt_policy = build_local_prompt(prompt_policy, edit_level)
         self.temperature = temperature
         self.include_motivations = include_motivations
         self.logger = logger
@@ -245,6 +245,13 @@ class JBGLanguageImprover:
 
         ai.load_structure(self.structure_json)
         ai.suggest_changes_token_aware_batching()
+        local_usage = self.usage_tracker.totals("local")
+        self.run_summary.edit_level_applied = (
+            self.edit_profile is not None and local_usage.calls > local_usage.failed_calls
+        )
+        self.logger.info("Edit level: %s; profile: %s; applied: %s",
+                         self.edit_level, self.run_summary.edit_profile,
+                         self.run_summary.edit_level_applied)
 
         if self.save_intermediate_json:
             suggestions_path = ai.save_as_json(self.suggestions_json, use_validated=True)
