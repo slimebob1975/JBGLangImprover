@@ -6,11 +6,11 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
     from app.src.JBGDataRetention import loggable_text
-    from app.src.JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
+    from app.src.JBGRunEditing import append_visible_text, plan_span_edit, replace_runs, split_at_unchanged_hard_hyphens
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
     from JBGDataRetention import loggable_text
-    from JBGRunEditing import append_visible_text, plan_span_edit, replace_runs
+    from JBGRunEditing import append_visible_text, plan_span_edit, replace_runs, split_at_unchanged_hard_hyphens
 
 try:
     from app.src.JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
@@ -398,6 +398,13 @@ class SimpleMarkupRenderer:
             raise ValueError(
                 f"Span text mismatch. Expected {loggable_text(old_text)}, got {loggable_text(plan.actual_old)}"
             )
+
+        if any(run.find(f"{{{W_NS}}}noBreakHyphen") is not None
+               for segment in plan.segments for run in segment.runs):
+            split = split_at_unchanged_hard_hyphens(plan.segments[0]) if len(plan.segments) == 1 else None
+            if split is None:
+                raise ValueError("unsafe_span_run_content:noBreakHyphen")
+            plan.segments = split
 
         for segment in plan.segments:
             new_elements = []

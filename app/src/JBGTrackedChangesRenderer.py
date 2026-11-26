@@ -11,13 +11,13 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import W_NS, DocxPackage
     from app.src.JBGDataRetention import loggable_text
-    from app.src.JBGRunEditing import SpanSegment, append_visible_text, plan_span_edit, replace_runs
+    from app.src.JBGRunEditing import SpanSegment, append_visible_text, plan_span_edit, replace_runs, split_at_unchanged_hard_hyphens
     from app.src.JBGRevisionIds import max_revision_id
     from app.src.JBGTokenDiffEngine import TokenDiffEngine
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, DocxPackage
     from JBGDataRetention import loggable_text
-    from JBGRunEditing import SpanSegment, append_visible_text, plan_span_edit, replace_runs
+    from JBGRunEditing import SpanSegment, append_visible_text, plan_span_edit, replace_runs, split_at_unchanged_hard_hyphens
     from JBGRevisionIds import max_revision_id
     from JBGTokenDiffEngine import TokenDiffEngine
 
@@ -690,7 +690,14 @@ class TrackedChangesRenderer:
         # rather than silently dropping a reference from the document. This
         # protection applies to both word-level and legacy span mode.
         unsafe = self._unsafe_span_run_elements(plan.segments)
+        hyphen_split = False
         if unsafe:
+            if unsafe == ("noBreakHyphen",) and len(plan.segments) == 1:
+                split = split_at_unchanged_hard_hyphens(plan.segments[0])
+                if split is not None:
+                    plan.segments = split
+                    hyphen_split = True
+                    unsafe = self._unsafe_span_run_elements(plan.segments)
             # A standalone footnote-reference run can act as an immutable
             # boundary only if an unchanged, unique 16-character context
             # straddles its position in BOTH original and proposed text.
@@ -708,7 +715,29 @@ class TrackedChangesRenderer:
         # reproduce the input byte-for-byte (notably NBSP and Unicode spaces).
         fallback_reason = None
         if self.word_level_changes:
-            if len(plan.segments) != 1:
+            if hyphen_split:
+                # Recompute lossless diffs for each independent plain span.
+                prepared = []
+                for piece in plan.segments:
+                    exact = TokenDiffEngine().build_diff(piece.old, piece.new, lossless=True)
+                    if (self._word_diff_safety_reason(piece.old, piece.new, exact) is not None
+                            or self._word_run_safety_reason(paragraph, piece, piece.old, piece.new) is not None):
+                        prepared = None
+                        break
+                    prepared.append((piece, exact))
+                if prepared:
+                    first_result = last_result = None
+                    for piece, exact in prepared:
+                        item = self._rewrite_segmented_run(piece, exact)
+                        if first_result is None:
+                            first_result = item
+                        last_result = item
+                    first_result["anchor_end_kind"] = last_result["anchor_end_kind"]
+                    first_result["anchor_end_revision_id"] = last_result["anchor_end_revision_id"]
+                    first_result["word_level_status"] = "word_level"
+                    return first_result
+                fallback_reason = "protected_hyphen_boundary"
+            elif len(plan.segments) != 1:
                 # A stable footnote split can still contain independent,
                 # lossless token-level changes on either side. Validate EVERY
                 # piece before modifying XML; never rewrite through the

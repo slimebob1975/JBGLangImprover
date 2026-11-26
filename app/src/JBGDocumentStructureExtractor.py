@@ -615,6 +615,9 @@ class DocumentStructureExtractor:
             for child in run:
                 if child.tag == f"{{{W_NS}}}t":
                     parts.append(child.text or "")
+                elif child.tag == f"{{{W_NS}}}noBreakHyphen":
+                    # Expose the spelling, not the layout property.
+                    parts.append("-")
                 elif child.tag == f"{{{W_NS}}}tab":
                     parts.append("\t")
                 elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
@@ -706,6 +709,9 @@ class DocumentStructureExtractor:
             for child in run:
                 if child.tag == f"{{{W_NS}}}t":
                     parts.append(child.text or "")
+                elif child.tag == f"{{{W_NS}}}noBreakHyphen":
+                    # Expose the spelling, not the layout property.
+                    parts.append("-")
                 elif child.tag == f"{{{W_NS}}}tab":
                     parts.append("\t")
                 elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
@@ -731,8 +737,11 @@ class DocumentStructureExtractor:
                     if footnote_id in ("-1", "0"):
                         continue
 
-                    texts = footnote.findall(".//w:t", NSMAP)
-                    full_text = "".join([t.text for t in texts if t.text])
+                    full_text = "".join(
+                        (node.text or "") if node.tag == f"{{{W_NS}}}t" else "-"
+                        for node in footnote.iter()
+                        if node.tag in {f"{{{W_NS}}}t", f"{{{W_NS}}}noBreakHyphen"}
+                    )
 
                     if full_text.strip():
                         footnotes.append({

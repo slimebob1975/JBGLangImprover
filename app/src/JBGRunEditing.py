@@ -35,6 +35,8 @@ EDITABLE_CONTAINERS = {f"{W}p", f"{W}hyperlink"}
 def visible_text_from_run_child(child: etree._Element) -> str:
     if child.tag == f"{W}t":
         return child.text or ""
+    if child.tag == f"{W}noBreakHyphen":
+        return "-"
     if child.tag == f"{W}tab":
         return "\t"
     if child.tag in (f"{W}br", f"{W}cr"):
@@ -225,3 +227,75 @@ def replace_runs(segment: SpanSegment, new_elements: list[etree._Element]) -> No
         container.remove(run)
     for offset, element in enumerate(new_elements):
         container.insert(index + offset, element)
+
+
+def split_at_unchanged_hard_hyphens(segment: SpanSegment) -> Optional[list[SpanSegment]]:
+    """Keep original hyphen-bearing runs intact, editing only proven plain runs.
+
+    A unique unchanged context must pin every protected run in both views.
+    Never recreate a hard hyphen, move a marker, cross containers, or split
+    a mixed run whose own text changes. Work on a plan, not the XML tree.
+    """
+    runs = segment.runs
+    if (not runs or segment.container.tag != f"{W}p"
+            or any(r.getparent() is not segment.container for r in runs)
+            or any(a.getnext() is not b for a, b in zip(runs, runs[1:]))):
+        return None
+    allowed = {f"{W}rPr", f"{W}t", f"{W}noBreakHyphen"}
+    if any(c.tag not in allowed for r in runs for c in r):
+        return None
+    old = segment.before + segment.old + segment.after
+    new = segment.before + segment.new + segment.after
+    if old != "".join(run_visible_text(r) for r in runs):
+        return None
+    equal_blocks = [b for b in difflib.SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks() if b.size]
+    protected = []
+    cursor = 0
+    for index, run in enumerate(runs):
+        end = cursor + len(run_visible_text(run))
+        if run.find(f"{W}noBreakHyphen") is not None:
+            # Eight unchanged characters on each side, clipped only at
+            # actual segment boundaries. Require enough context overall.
+            left, right = max(0, cursor - 8), min(len(old), end + 8)
+            context = old[left:right]
+            if (len(context) < 17 or old.count(context) != 1
+                    or new.count(context) != 1):
+                return None
+            block = next((b for b in equal_blocks if b.a <= left and b.a + b.size >= right), None)
+            if block is None:
+                return None
+            mapped = block.b + cursor - block.a
+            protected.append((index, cursor, end, mapped, mapped + end - cursor))
+        cursor = end
+    if not protected:
+        return None
+    pieces = []
+    prev_index = prev_old = prev_new = 0
+    for index, start, end, mapped, mapped_end in protected + [(len(runs), len(old), len(old), len(new), len(new))]:
+        group = runs[prev_index:index]
+        old_part, new_part = old[prev_old:start], new[prev_new:mapped]
+        if old_part != new_part:
+            if not group or not old_part:
+                return None
+            # Preserve heterogeneous formatting by refusing rather than
+            # cloning the first run's properties across unlike runs.
+            properties = [r.find(f"{W}rPr") for r in group]
+            signatures = {etree.tostring(p, method="c14n") if p is not None else b"" for p in properties}
+            if len(signatures) != 1:
+                return None
+            before = segment.before if prev_index == 0 else ""
+            after = segment.after if index == len(runs) else ""
+            if not (old_part.startswith(before) and new_part.startswith(before)
+                    and old_part.endswith(after) and new_part.endswith(after)):
+                return None
+            stop_old = len(old_part) - len(after)
+            stop_new = len(new_part) - len(after)
+            if stop_old <= len(before) or stop_new < len(before):
+                return None
+            pieces.append(SpanSegment(container=segment.container, runs=group,
+                                      old=old_part[len(before):stop_old],
+                                      new=new_part[len(before):stop_new],
+                                      before=before, after=after,
+                                      first_run=group[0], last_run=group[-1]))
+        prev_index, prev_old, prev_new = index + 1, end, mapped_end
+    return pieces or None
