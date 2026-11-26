@@ -17,6 +17,7 @@ try:
     from app.src.JBGUsageTracker import UsageTracker
     from app.src.JBGRunSummary import RunSummary
     from app.src.JBGEditLevel import get_edit_profile, build_local_prompt
+    from app.src.JBGModelAssessment import summarize_assessments
     from app.src.JBGBuildInfo import get_build_info
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -36,6 +37,7 @@ except ModuleNotFoundError:
     from JBGUsageTracker import UsageTracker
     from JBGRunSummary import RunSummary
     from JBGEditLevel import get_edit_profile, build_local_prompt
+    from JBGModelAssessment import summarize_assessments
     from JBGBuildInfo import get_build_info
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -236,6 +238,7 @@ class JBGLanguageImprover:
             allow_normalized_matches=True,
             usage_tracker=self.usage_tracker,
             usage_phase="local",
+            assess_changes=self.edit_profile is not None,
         )
 
         # Suggestorn arbetar mot strukturfilen
@@ -258,6 +261,12 @@ class JBGLanguageImprover:
             filter_report_path = ai.save_filter_report(self.filter_report_json)
             self.logger.info(f"Saved validated suggestions JSON: {suggestions_path}")
             self.logger.info(f"Saved suggestion filter report: {filter_report_path}")
+
+        if self.edit_profile is not None:
+            self.run_summary.model_assessments = summarize_assessments(
+                ai.json_suggestions or [], ai.validated_suggestions
+            )
+            self.logger.info("Model assessments: %s", self.run_summary.model_assessments)
 
         counts = self.run_summary.local_suggestions
         counts.raw = len(ai.json_suggestions or [])

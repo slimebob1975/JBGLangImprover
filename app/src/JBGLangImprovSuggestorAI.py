@@ -7,7 +7,7 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional, Literal, Any
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,9 +15,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     from app.src.JBGModelClient import create_openai_client, max_parallel_model_calls
     from app.src.JBGDataRetention import loggable_text
+    from app.src.JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
 except ModuleNotFoundError:
     from JBGModelClient import create_openai_client, max_parallel_model_calls
     from JBGDataRetention import loggable_text
+    from JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -41,6 +43,8 @@ class SuggestedChange:
     match_status: Literal["exact", "normalized", "rejected"]
     safe_to_apply: bool = True
     safety_reason: Optional[str] = None
+    model_assessment: Optional[ModelAssessment] = None
+    assessment_status: str = "missing"
 
 
 @dataclass
@@ -304,10 +308,12 @@ class JBGLangImprovSuggestorAI:
         quality_filter=None,
         usage_tracker=None,
         usage_phase="local",
+        assess_changes=False,
     ):
         self.api_key = api_key
         self.model = model
-        self.policy_prompt = prompt_policy
+        self.assess_changes = assess_changes
+        self.policy_prompt = prompt_policy + assessment_prompt() if assess_changes else prompt_policy
         self.temperature = temperature
         self.logger = logger
         self.progress_callback = progress_callback
@@ -730,7 +736,10 @@ class JBGLangImprovSuggestorAI:
         if self.strict_validation and match_status == "rejected":
             raise ValueError(f"'old' text not found in source element {element_id}")
 
+        assessment, status = parse_assessment(item) if self.assess_changes else (None, "missing")
         return SuggestedChange(
+            model_assessment=assessment,
+            assessment_status=status,
             element_type=element_type,
             element_id=element_id,
             footnote_id=footnote_id,
@@ -852,6 +861,8 @@ class JBGLangImprovSuggestorAI:
             return suggestion
 
         return SuggestedChange(
+            model_assessment=suggestion.model_assessment,
+            assessment_status=suggestion.assessment_status,
             element_type=suggestion.element_type,
             element_id=suggestion.element_id,
             footnote_id=suggestion.footnote_id,
@@ -1097,6 +1108,8 @@ class JBGLangImprovSuggestorAI:
         span = self._find_span_or_normalized_span(suggestion.old, element_text)
         if span is None:
             return SuggestedChange(
+                model_assessment=suggestion.model_assessment,
+                assessment_status=suggestion.assessment_status,
                 element_type=suggestion.element_type,
                 element_id=suggestion.element_id,
                 footnote_id=suggestion.footnote_id,
@@ -1147,6 +1160,8 @@ class JBGLangImprovSuggestorAI:
             reason = "new_overlaps_following_context"
 
         return SuggestedChange(
+            model_assessment=suggestion.model_assessment,
+            assessment_status=suggestion.assessment_status,
             element_type=suggestion.element_type,
             element_id=suggestion.element_id,
             footnote_id=suggestion.footnote_id,
@@ -1184,6 +1199,8 @@ class JBGLangImprovSuggestorAI:
 
             cleaned.append(
                 SuggestedChange(
+                    model_assessment=s.model_assessment,
+                    assessment_status=s.assessment_status,
                     element_type=s.element_type,
                     element_id=s.element_id,
                     footnote_id=s.footnote_id,
@@ -1757,6 +1774,10 @@ class JBGLangImprovSuggestorAI:
         if not s.safe_to_apply:
             payload["safe_to_apply"] = False
             payload["safety_reason"] = s.safety_reason
+        if self.assess_changes:
+            payload["assessment_status"] = s.assessment_status
+            if s.model_assessment is not None:
+                payload["model_assessment"] = asdict(s.model_assessment)
         return payload
 
     # -------------------------------------------------------------------------
