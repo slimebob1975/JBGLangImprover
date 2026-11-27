@@ -272,8 +272,42 @@ class AboutSectionContentTests(unittest.TestCase):
         self.assertIn(["Förslag som förts in i dokumentet", "75"], rows)
         self.assertIn(["Förslag som inte kunde föras in", "19"], rows)
         rows = self.table_after(blocks, "Ordnivåändringar med säker spann-fallback")
-        self.assertIn(["Skyddat: Hårt bindestreck (w:noBreakHyphen)", "5"], rows)
-        self.assertIn(["Skyddat: Sparad sidbrytning (w:lastRenderedPageBreak)", "7"], rows)
+        self.assertIn(["Skyddat: Hårt bindestreck", "5"], rows)
+        self.assertIn(["Skyddat: Sparad sidbrytning", "7"], rows)
+
+    def test_diagnostics_table_uses_only_readable_labels(self):
+        summary = copy.deepcopy(REAL_RUN_SUMMARY)
+        summary["word_level_diagnostics"] = {
+            "enabled": True, "word_level": 71, "span_fallback": 18,
+            "fallback_reasons": {"diff_no_common_text": 3,
+                                 "diff_no_common_text_equivalent_span": 8,
+                                 "multiple_edit_segments": 6,
+                                 "unknown_internal_reason": 1},
+            "unsafe_span_skipped": 14,
+            "unsafe_span_elements": {"fldChar": 1, "footnoteReference": 4,
+                                     "instrText": 1, "lastRenderedPageBreak": 6,
+                                     "noBreakHyphen": 8, "unknownInternalTag": 1},
+        }
+        before = copy.deepcopy(summary)
+        rows = self.table_after(build_about_section_blocks(summary, tracked=True),
+                                "Ordnivåändringar med säker spann-fallback")
+        self.assertEqual(rows, [
+            ["Resultat", "Antal förslag"],
+            ["Ordnivå", "71"],
+            ["Fallback till spann", "18"],
+            ["Fallback: Inga oförändrade textdelar", "3"],
+            ["Fallback: Enskilt ordbyte – redan lika precist i spannläge", "8"],
+            ["Fallback: Flera redigeringsbehållare", "6"],
+            ["Fallback: Annan orsak", "1"],
+            ["Ej införda förslag: skydd för Word-element", "14"],
+            ["Skyddat: Fältmarkör", "1"],
+            ["Skyddat: Fotnotsreferens", "4"],
+            ["Skyddat: Fältinstruktion", "1"],
+            ["Skyddat: Sparad sidbrytning", "6"],
+            ["Skyddat: Hårt bindestreck", "8"],
+            ["Skyddat: Word-element", "1"],
+        ])
+        self.assertEqual(summary, before)
 
     def test_cached_tokens_are_shown_when_present(self):
         # Testkörningen ba144f3d: 56 704 av 60 817 tokens kom från cache

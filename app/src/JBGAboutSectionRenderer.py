@@ -336,8 +336,7 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             ["Fallback till spann", _fmt_int(diagnostics.get("span_fallback", 0))],
         ]
         for reason, count in sorted((diagnostics.get("fallback_reasons") or {}).items()):
-            label = fallback_labels.get(reason)
-            display = f"{label} ({reason})" if label else reason
+            display = fallback_labels.get(reason, "Annan orsak")
             rows.append([f"Fallback: {display}", _fmt_int(count)])
         skipped = diagnostics.get("unsafe_span_skipped", 0)
         if skipped:
@@ -351,7 +350,7 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             }
             for tag, count in sorted((diagnostics.get("unsafe_span_elements") or {}).items()):
                 display = element_labels.get(tag, "Word-element")
-                rows.append([f"Skyddat: {display} (w:{tag})", _fmt_int(count)])
+                rows.append([f"Skyddat: {display}", _fmt_int(count)])
         blocks.append(AboutBlock("table", rows=rows, numeric_columns=(1,)))
         blocks.append(AboutBlock("paragraph", [(
             "Ordnivå innebär att bara ändrade ord eller delar av texten markeras. "
