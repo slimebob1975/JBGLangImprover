@@ -37,9 +37,11 @@ from lxml import etree
 try:
     from app.src.JBGDocxPackage import DocxPackage
     from app.src.JBGRevisionIds import max_revision_id
+    from app.src.JBGEditLevel import get_edit_profile
 except ModuleNotFoundError:
     from JBGDocxPackage import DocxPackage
     from JBGRevisionIds import max_revision_id
+    from JBGEditLevel import get_edit_profile
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -152,7 +154,10 @@ LIX_EXPLANATION = (
     "än sex bokstäver. Rubriker, sidhuvuden, sidfötter och fotnoter räknas inte med. "
     "Riktvärden: under 30 mycket lättläst, 30–40 lättläst, 40–50 medelsvår, "
     "50–60 svår och över 60 mycket svår. LIX säger inget om hur begriplig texten "
-    "är i övrigt, och en tydligare formulering kan ibland ge ett högre värde."
+    "är i övrigt, och en tydligare formulering kan ibland ge ett högre värde. "
+    "Värdet efter granskningen beräknas utifrån de förslag som klarat kontrollerna "
+    "och kan tillämpas i beräkningen, även om vissa inte kunnat föras in i Word. "
+    "Det är därför inte ett uppmätt värde för den färdiga Word-filen."
 )
 
 
@@ -217,7 +222,7 @@ def _readability_blocks(readability: dict) -> list[AboutBlock]:
     before = readability.get("before") or {}
     after = readability.get("after") or {}
     rows = [
-        ["Del av dokumentet", "Före", "Om alla förslag godtas", "Förändring"],
+        ["Del av dokumentet", "Före", "Efter (beräknat)", "Förändring"],
         [
             "Hela dokumentet",
             _fmt_lix(before.get("lix"), before.get("band")),
@@ -277,11 +282,28 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             "anpassad för den här granskningen" if prompt_customized else "standard",
         ))
 
+    level = summary.get("edit_level")
+    if level is not None:
+        profile = get_edit_profile(level)
+        blocks.append(_item("Bearbetningsnivå", f"{level} av 100 – {profile.name}"))
+        if summary.get("edit_level_applied"):
+            blocks.append(AboutBlock("paragraph", [(
+                profile.description + " Nivån styr instruktionen för den lokala språkgranskningen, "
+                "inte ett visst antal ändringar. Vid samma nivå kan olika granskningar ge olika förslag. "
+                "Nivån påverkar inte den globala granskningen. Skyddsreglerna gäller alltid.", False)]))
+        else:
+            blocks.append(AboutBlock("paragraph", [(
+                "Nivån registrerades men tillämpades inte i den lokala granskningen.", False)]))
+
     # --- Tabeller
     blocks.append(_table_title("Anrop och tokens"))
     blocks.append(_usage_table(summary.get("usage") or {}))
     blocks.append(_table_title("Förslag"))
     blocks.append(_suggestions_table(summary))
+    blocks.append(AboutBlock("paragraph", [(
+        "Kontrollerna avgör vilka förslag som kan gå vidare. Alla sådana förslag "
+        "kan inte alltid föras in i Word. De förslag som har förts in är fortfarande "
+        "förslag som du behöver bedöma själv.", False)]))
     diagnostics = summary.get("word_level_diagnostics")
     fallback_labels = {
         "diff_text_mismatch": "Normaliserad diff ändrade originaltexten",
@@ -314,8 +336,7 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
             ["Fallback till spann", _fmt_int(diagnostics.get("span_fallback", 0))],
         ]
         for reason, count in sorted((diagnostics.get("fallback_reasons") or {}).items()):
-            label = fallback_labels.get(reason)
-            display = f"{label} ({reason})" if label else reason
+            display = fallback_labels.get(reason, "Annan orsak")
             rows.append([f"Fallback: {display}", _fmt_int(count)])
         skipped = diagnostics.get("unsafe_span_skipped", 0)
         if skipped:
@@ -324,11 +345,18 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
                 "footnoteReference": "Fotnotsreferens", "endnoteReference": "Slutnotsreferens",
                 "fldChar": "Fältmarkör", "instrText": "Fältinstruktion",
                 "drawing": "Ritobjekt", "pict": "Bild", "object": "Inbäddat objekt",
+                "noBreakHyphen": "Hårt bindestreck",
+                "lastRenderedPageBreak": "Sparad sidbrytning",
             }
             for tag, count in sorted((diagnostics.get("unsafe_span_elements") or {}).items()):
                 display = element_labels.get(tag, "Word-element")
-                rows.append([f"Skyddat: {display} (w:{tag})", _fmt_int(count)])
+                rows.append([f"Skyddat: {display}", _fmt_int(count)])
         blocks.append(AboutBlock("table", rows=rows, numeric_columns=(1,)))
+        blocks.append(AboutBlock("paragraph", [(
+            "Ordnivå innebär att bara ändrade ord eller delar av texten markeras. "
+            "När det inte går på ett säkert sätt kan ett längre textavsnitt markeras i stället. "
+            "Flera skyddade Word-element kan förekomma i samma förslag. "
+            "Alla uteblivna förslag behöver inte bero på dessa element.", False)]))
     if summary.get("global_review"):
         blocks.extend(_global_blocks(summary))
     if summary.get("readability"):

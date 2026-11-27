@@ -22,12 +22,13 @@ A failure in an optional step (global review, LIX, the section) never stops the 
 
 ## Using the service
 
-The form has five panels:
+The form includes the following options:
 
 | Panel | Options | Default |
 |---|---|---|
 | **Ladda upp din text** | the `.docx` file | – |
 | **Inställningar för språkmodellen** | API key, model, the editable part of the local prompt ("Anpassa den lokala promptinstruktionen") | – |
+| **Bearbetningsnivå** | Local review intensity, integer 1–100 | 70 (Noggrann) |
 | **Dokumentinställningar** | "Granska dokumentets struktur och upplägg" (global review), "Beräkna LIX-värde före och efter språkgranskning" | both off |
 | **Hur ska resultatet se ut?** | "Enkel färgmarkering" (deleted text struck through in red, new text in green, no comments) or "Spåra ändringar och infogade kommentarer" (tracked changes with a comment motivating each proposal) | tracked changes |
 | **Övrigt** | "Lägg till ”Om klarspråkningen” sist" | off |
@@ -39,6 +40,31 @@ The form stays locked after a run; reload the page (Ctrl-Shift-R) to start a new
 ---
 
 ## Local review
+
+### Bearbetningsnivå (local review intensity)
+
+| Level | Profile | Intended scope |
+|---|---|---|
+| 1–20 | Mycket varsam | Clear errors and serious obstacles to understanding |
+| 21–40 | Varsam | Also substantial improvements in comprehensibility |
+| 41–60 | Balanserad | Also simpler words and clearer sentences |
+| 61–80 | Noggrann | Also smaller improvements in precision, flow and concision |
+| 81–100 | Mycket noggrann | Also useful small punctuation and word-choice improvements |
+
+The GUI defaults to 70. The profile and the exact value (for example,
+`Önskad ingreppsnivå: 73/100`) are appended to the local prompt. Higher values
+ask the model to consider smaller useful improvements, not to meet a quota.
+The model is stochastic: nearby values need not give visibly different results,
+and separate runs need not be monotonic or nested. The global prompt, model
+settings and safety checks do not change with this value. Clear errors and
+mandatory terminology rules remain in scope at all levels, subject to safety.
+
+`GET /config` exposes the ranges and descriptions. `POST /upload/` accepts an
+optional integer form field `edit_level` from 1 through 100; an omitted field
+preserves the legacy prompt, rather than selecting the GUI default. Invalid
+values are rejected. The summary records `edit_level`, `edit_profile` and
+`edit_level_applied`; the last indicates successful local use of the instruction,
+not proof of a particular degree of editing.
 
 ### Prompt strategy
 
@@ -129,7 +155,8 @@ Rejected findings are saved with a reason in `<file>_global_findings.json`. A fi
 
 Before a local proposal is used, the service:
 
-- trims it to the smallest changed span, without ever cutting inside a word (dots in abbreviations such as "bl.a." count as part of the word)
+- requires a unique source span (exact or whitespace-normalized); rejects ambiguous or partial-word matches rather than selecting the first occurrence
+- minimizes only if the resulting span stays at the original position and produces identical full-element text; otherwise retains the original anchor
 - rejects spans that start or end inside a word in the actual text, new text glued onto a neighbouring word, and obviously garbled text (valid forms such as "IAF:s", "t.ex." and web addresses are recognized)
 - rejects any change to a legal reference ("6 c §", "1 kap. 6 §", SFS numbers such as "1997:238")
 - rejects replacements too different from the original (`low_similarity`), with an exception for pure comma and semicolon edits
@@ -149,6 +176,20 @@ Rejected proposals are logged with their reason. Accepted proposals then pass a 
 | `sensitive_element_growth` | The text grows noticeably in a sensitive element (header, footer, footnote, table cell, text box). |
 
 Warnings do not mean a proposal is wrong; they help when tuning the prompt and the checks.
+Active deterministic guards also reject selected meaning risks (modality, negation,
+quantifiers, alternatives, terminology, attribution, ownership, analytical scope
+and protected source/system text). A valid model assessment of medium or high
+meaning risk is rejected. Missing or invalid assessments are diagnostic, not a
+substitute for the deterministic checks. Priority and other assessment fields
+are not numerical acceptance thresholds. A narrow independent-correction
+mechanism can retain an unambiguous grammatical correction from certain
+composite proposals; it is not a general rewrite splitter.
+
+Planning and rendering recheck text coordinates; no fallback may relocate a
+failed change to another paragraph. Protected Word structures may prevent
+insertion even after a proposal passes the checks. Unchanged hard hyphens are
+preserved where the renderer can safely split around them. The user must still
+review proposed edits; the checks do not prove linguistic or semantic correctness.
 
 ---
 
@@ -160,7 +201,7 @@ LIX before and after is computed deterministically from the structure JSON and t
 python -m app.src.JBGReadabilityMetrics <file>_structure.json [<file>_suggestions.json]
 ```
 
-LIX = words/sentences + 100 × long words (more than six letters)/words. Body paragraphs, table cells and text boxes are counted; headings, headers, footers, footnotes, hidden text and generated content are not. The value is reported for the whole document and per top-level chapter. The "after" value assumes that every accepted proposal is applied. LIX is an indicator, not a quality score: a clearer rewrite can raise LIX when short words disappear.
+LIX = words/sentences + 100 × long words (more than six letters)/words. Body paragraphs, table cells and text boxes are counted; headings, headers, footers, footnotes, hidden text and generated content are not. The value is reported for the whole document and per top-level chapter. The "after" value is a simulation from accepted proposals that can be applied in memory within the LIX scope, before Word rendering. It can include proposals that cannot be inserted into the result file. It is not a measurement of the finished Word document. LIX is an indicator, not a quality score: a clearer rewrite can raise LIX when short words disappear.
 
 ---
 
@@ -168,7 +209,7 @@ LIX = words/sentences + 100 × long words (more than six letters)/words. Body pa
 
 When enabled, a section is added last in the document, on a new page:
 
-- run facts: date, model, result mode, whether the prompt was customized
+- run facts: date, model, result mode, whether the prompt was customized, selected local review level and whether it was used
 - tables: model calls and tokens per phase (including tokens re-used from cache), local proposals, global findings per category, and LIX for the whole document and each chapter
 
 The section follows the same rules in every document: it is placed after all existing content, has an unnumbered heading in a heading style taken from the document (numbering is switched off if the style is numbered; bold text if the document has no heading styles), and in tracked mode it is one tracked insertion, so rejecting it restores the original document exactly. A hidden bookmark marks it, so a new run skips and replaces it instead of adding a second one.
@@ -185,9 +226,9 @@ Each run writes, next to the uploaded file (see [Data handling and retention](#d
 |---|---|
 | `<file>_structure.json` | the extracted elements, plus `excluded` (hidden and generated paragraphs) |
 | `<file>_suggestions.json` | the accepted local proposals |
-| `<file>_suggestion_filter_report.json` | quality warnings per proposal |
+| `<file>_suggestion_filter_report.json` | post-validation proposals, acceptance decisions and quality warnings/errors (not the raw API response) |
 | `<file>_global_findings.json` | global findings, accepted and rejected (with reasons) |
-| `<file>_run_summary.json` | settings, token usage per phase, proposal counts, LIX, section and comment results |
+| `<file>_run_summary.json` | settings, level and profile, token usage per phase, proposal counts, assessments, quality guards, independent corrections, Word diagnostics, LIX, section and comment results |
 | `logs/<job_id>.log` | the session log, including every rejected proposal and its reason |
 
 ---
@@ -277,7 +318,7 @@ Then open `http://127.0.0.1:8000`, upload a Word document, enter an OpenAI API k
 
 ## Tests
 
-The suite (170 tests) builds temporary Word documents and uses a simulated model, so no API key is needed. It covers extraction (including hidden text, generated content and other authors' tracked changes), the checks on local proposals, the global review and its validation rules, rendering in both modes (body, tables, text boxes, headers, footers, footnotes, comments), the "Om klarspråkningen" section across many document shapes (including a simulated "reject all"), LIX, parallel calls, the form's defaults and the `/me` endpoint. Run it from the repository root:
+The test suite builds temporary Word documents and uses a simulated model, so no API key is needed. It covers extraction (including hidden text, generated content and other authors' tracked changes), the checks on local proposals, the global review and its validation rules, rendering in both modes (body, tables, text boxes, headers, footers, footnotes, comments), the "Om klarspråkningen" section across many document shapes (including a simulated "reject all"), LIX, parallel calls, the form's defaults and the `/me` endpoint. Run it from the repository root:
 
 ```bash
 python -m unittest discover -s tests -v

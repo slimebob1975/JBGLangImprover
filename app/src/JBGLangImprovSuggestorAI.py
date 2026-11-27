@@ -7,7 +7,7 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Optional, Literal, Any
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,9 +15,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     from app.src.JBGModelClient import create_openai_client, max_parallel_model_calls
     from app.src.JBGDataRetention import loggable_text
+    from app.src.JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
+    from app.src.JBGQualityGuards import QualityGuards
+    from app.src.JBGIndependentCorrections import independent_corrections
+    from app.src.JBGTextAnchors import locate_span, unique_exact_span, unique_normalized_span
 except ModuleNotFoundError:
     from JBGModelClient import create_openai_client, max_parallel_model_calls
     from JBGDataRetention import loggable_text
+    from JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
+    from JBGQualityGuards import QualityGuards
+    from JBGIndependentCorrections import independent_corrections
+    from JBGTextAnchors import locate_span, unique_exact_span, unique_normalized_span
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -41,6 +49,8 @@ class SuggestedChange:
     match_status: Literal["exact", "normalized", "rejected"]
     safe_to_apply: bool = True
     safety_reason: Optional[str] = None
+    model_assessment: Optional[ModelAssessment] = None
+    assessment_status: str = "missing"
 
 
 @dataclass
@@ -304,10 +314,12 @@ class JBGLangImprovSuggestorAI:
         quality_filter=None,
         usage_tracker=None,
         usage_phase="local",
+        assess_changes=False,
     ):
         self.api_key = api_key
         self.model = model
-        self.policy_prompt = prompt_policy
+        self.assess_changes = assess_changes
+        self.policy_prompt = prompt_policy + assessment_prompt() if assess_changes else prompt_policy
         self.temperature = temperature
         self.logger = logger
         self.progress_callback = progress_callback
@@ -423,7 +435,7 @@ class JBGLangImprovSuggestorAI:
             parsed = self._parse_model_response(raw_text)
             validated = self._postprocess_suggestions(parsed)
 
-            accepted, reviewed = self.quality_filter.filter(validated)
+            accepted, reviewed = self._filter_with_quality_guards(validated)
 
             self.json_suggestions = parsed
             self.validated_suggestions = accepted
@@ -483,11 +495,96 @@ class JBGLangImprovSuggestorAI:
         self.json_suggestions = self._deduplicate_raw_suggestions(all_raw_suggestions)
         all_validated = self._deduplicate_validated_suggestions(all_validated)
 
-        accepted, reviewed = self.quality_filter.filter(all_validated)
+        accepted, reviewed = self._filter_with_quality_guards(all_validated)
         self.validated_suggestions = accepted
         self.filtered_review = reviewed
 
         self._report("Alla AI-förslag är genererade, validerade och filtrerade.")
+
+    def _filter_with_quality_guards(self, validated, *, recover=True):
+        # Existing schema, span and safety checks retain precedence. Only
+        # proposals accepted by the existing quality filter reach new guards.
+        _, reviewed = self.quality_filter.filter(validated)
+        guards = QualityGuards(self.json_structured_document.get("elements", []))
+
+        def normalize_dates(text):
+            # Reuse the existing recognized date formats, but preserve every
+            # occurrence and its order for the numeric guard.
+            return self._WRITTEN_DATE_RE.sub(
+                lambda m: f"{m.group(3)}-{self._SWEDISH_MONTHS[m.group(2).lower()]:02d}-{int(m.group(1)):02d}", text)
+
+        for row in reviewed:
+            if not row.accepted:
+                continue
+            extra = guards.review(row.suggestion, self._find_span_or_normalized_span,
+                                  normalize_dates, assess_changes=self.assess_changes)
+            row.issues.extend(SuggestionIssue(i.severity, i.code, i.message) for i in extra)
+            errors = [i.code for i in extra if i.severity == "error"]
+            if errors:
+                row.accepted = False
+                self.logger.warning("Quality guard rejected [%s:%s]: %s",
+                                    row.suggestion.element_type, row.suggestion.element_id,
+                                    "; ".join(errors))
+        if recover and self.assess_changes:
+            self._recover_independent_corrections(reviewed)
+        return [row.suggestion for row in reviewed if row.accepted], reviewed
+
+    def _recover_independent_corrections(self, reviewed):
+        # Never recover from an unassessed or elevated-risk parent, nor from
+        # ambiguous/conflicting proposals for the same source element.
+        counts = defaultdict(int)
+        for row in reviewed:
+            counts[row.suggestion.element_id] += 1
+        for row in list(reviewed):
+            parent = row.suggestion
+            if (counts[parent.element_id] != 1 or parent.element_type != "paragraph"
+                    or parent.match_status != "exact" or not parent.safe_to_apply
+                    or parent.assessment_status != "valid" or parent.model_assessment is None
+                    or parent.model_assessment.meaning_risk != "low"
+                    or parent.model_assessment.confidence != "high"
+                    or parent.model_assessment.category != "correctness"
+                    or parent.model_assessment.requires_rewrite):
+                continue
+            # Only local modal/meaning-marker stops are eligible for recovery.
+            # Existing safety errors and whole-source protections retain precedence.
+            errors = {i.code for i in row.issues if i.severity == "error"}
+            if errors - {"guard_modality", "guard_quantifier", "guard_negation", "guard_disjunction"}:
+                continue
+            source = self._get_element_text_for_suggestion(parent)
+            candidates = independent_corrections(parent.old, parent.new, source)
+            if not candidates:
+                continue
+            old, new, motivation = candidates[0]
+            # No invented or inherited model priority: a deterministic repair
+            # is separately identified in the filter report.
+            raw = {"type": parent.element_type, "element_id": parent.element_id,
+                   "old": old, "new": new, "motivation": motivation}
+            # A bare deletion (e.g. "är " -> "") may lose its unique context
+            # during minimization. Keep the rule's short, complete anchor
+            # instead; apply the ordinary schema, stabilization and safety
+            # checks to that actual replacement without an exemption.
+            try:
+                child = self._validate_docx_suggestion(raw)
+            except ValueError:
+                continue
+            child = self._stabilize_span_with_element_context(child, source)
+            if (not child.safe_to_apply or child.match_status != "exact"
+                    or source.count(child.old) != 1 or not child.new.strip()):
+                continue
+            children = self._validate_and_clean_suggestions([child])
+            if len(children) != 1:
+                continue
+            accepted, child_rows = self._filter_with_quality_guards(children, recover=False)
+            if not accepted:
+                continue
+            # Replace, never supplement, the parent. Other edits are deliberately
+            # discarded; their independence has not been established.
+            row.accepted = False
+            row.issues.append(SuggestionIssue("warning", "split_parent_replaced",
+                "Ersätter det sammansatta förslaget med en självständig rättelse; övriga ändringar utelämnas."))
+            child_rows[0].issues.append(SuggestionIssue("warning", "split_recovered",
+                "Självständig rättelse från sammansatt förslag, kontrollerad på nytt."))
+            reviewed.extend(child_rows)
 
     def _call_model_for_chunks(self, client, system_msg, chunks) -> list[Optional[str]]:
         """
@@ -728,9 +825,12 @@ class JBGLangImprovSuggestorAI:
         match_status = self._match_old_against_text(old, element_text)
 
         if self.strict_validation and match_status == "rejected":
-            raise ValueError(f"'old' text not found in source element {element_id}")
+            raise ValueError(f"'old' text has no unique, complete anchor in source element {element_id}")
 
+        assessment, status = parse_assessment(item) if self.assess_changes else (None, "missing")
         return SuggestedChange(
+            model_assessment=assessment,
+            assessment_status=status,
             element_type=element_type,
             element_id=element_id,
             footnote_id=footnote_id,
@@ -745,7 +845,22 @@ class JBGLangImprovSuggestorAI:
     # -------------------------------------------------------------------------
 
     def _minimize_and_filter_suggestion(self, suggestion: SuggestedChange) -> Optional[SuggestedChange]:
-        minimized = self._minimize_change_span(suggestion)
+        element_text = self._get_element_text_for_suggestion(suggestion)
+        original_span = locate_span(suggestion.old, element_text)
+        if original_span is None:
+            return replace(suggestion, safe_to_apply=False,
+                           safety_reason="ambiguous_or_partial_source_anchor")
+        start, end = original_span
+        if suggestion.old != element_text[start:end]:
+            # Keep the actual source whitespace and the complete anchor.
+            # Never minimize against a normalized representation.
+            if not self.allow_normalized_matches:
+                return replace(suggestion, safe_to_apply=False,
+                               safety_reason="normalized_match_disabled")
+            suggestion = replace(suggestion, old=element_text[start:end])
+            minimized = suggestion
+        else:
+            minimized = self._minimize_change_span(suggestion)
         if minimized is None:
             return None
 
@@ -756,7 +871,17 @@ class JBGLangImprovSuggestorAI:
             )
             return None
 
-        element_text = self._get_element_text_for_suggestion(minimized)
+        # A minimized string is a valid anchor only if it is unique, lies
+        # inside the original span, and produces exactly the same full text.
+        candidate_span = unique_exact_span(minimized.old, element_text)
+        expected = element_text[:start] + suggestion.new + element_text[end:]
+        if candidate_span is not None:
+            a, b = candidate_span
+            actual = element_text[:a] + minimized.new + element_text[b:]
+        if (candidate_span is None or not (start <= a <= b <= end)
+                or actual != expected):
+            # Retain the original context rather than guessing a position.
+            minimized = suggestion
         stabilized = self._stabilize_span_with_element_context(minimized, element_text)
 
         if not stabilized.safe_to_apply:
@@ -852,6 +977,8 @@ class JBGLangImprovSuggestorAI:
             return suggestion
 
         return SuggestedChange(
+            model_assessment=suggestion.model_assessment,
+            assessment_status=suggestion.assessment_status,
             element_type=suggestion.element_type,
             element_id=suggestion.element_id,
             footnote_id=suggestion.footnote_id,
@@ -933,85 +1060,16 @@ class JBGLangImprovSuggestorAI:
         return i
 
     def _find_exact_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
-        idx = element_text.find(old_text)
-        if idx == -1:
-            return None
-        return idx, idx + len(old_text)
+        return unique_exact_span(old_text, element_text)
 
     def _find_normalized_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
-        """
-        Försöker hitta ett ungefärligt spann i originaltexten när endast normaliserad matchning lyckas.
-        Returnerar första spannet vars normaliserade innehåll matchar normaliserad old_text.
-        """
-        target = self._normalize_text(old_text)
-        if not target:
-            return None
-
-        n = len(element_text)
-        min_len = max(1, len(old_text) - 8)
-        max_len = min(n, len(old_text) + 16)
-
-        for start in range(n):
-            for end in range(start + min_len, min(n, start + max_len) + 1):
-                candidate = element_text[start:end]
-                if self._normalize_text(candidate) == target:
-                    return start, end
-
-        return None
+        return unique_normalized_span(old_text, element_text)
 
     def _find_span_or_normalized_span(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
-        span = self._find_exact_span_in_element_text(old_text, element_text)
-        if span is not None:
-            return span
-        return self._find_normalized_span_in_element_text(old_text, element_text)
+        return locate_span(old_text, element_text)
 
     def _is_word_char(self, ch: str) -> bool:
         return bool(self.WORD_CHAR_RE.match(ch))
-
-    def _expand_span_to_word_boundaries(
-        self,
-        element_text: str,
-        start: int,
-        end: int,
-    ) -> tuple[int, int]:
-        """
-        Expanderar ett spann till närmaste ordgränser.
-        Konservativt: bara bokstavs-/siffergränser, inte fraser.
-        """
-        new_start = start
-        new_end = end
-
-        while new_start > 0 and self._is_word_char(element_text[new_start - 1]):
-            new_start -= 1
-
-        while new_end < len(element_text) and self._is_word_char(element_text[new_end]):
-            new_end += 1
-
-        return new_start, new_end
-
-    def _looks_like_fragment_boundary(
-        self,
-        element_text: str,
-        start: int,
-        end: int,
-    ) -> bool:
-        """
-        Returnerar True om spannet sannolikt börjar/slutar mitt i ord.
-        """
-        left_midword = (
-            start > 0
-            and start < len(element_text)
-            and self._is_word_char(element_text[start - 1])
-            and self._is_word_char(element_text[start])
-        )
-        right_midword = (
-            end > 0
-            and end < len(element_text)
-            and self._is_word_char(element_text[end - 1])
-            and self._is_word_char(element_text[end])
-        )
-
-        return left_midword or right_midword
 
     def _span_splits_a_word(self, element_text: str, start: int, end: int) -> bool:
         """True om spannet börjar eller slutar inne i ett ord i elementets text."""
@@ -1089,14 +1147,13 @@ class JBGLangImprovSuggestorAI:
         element_text: str,
     ) -> SuggestedChange:
         """
-        Försök reparera reducerade spann genom att:
-        1. hitta exakt old i element_text
-        2. expandera till ordgränser om old ser ut att ligga mitt i ord
-        3. markera unsafe om spannet fortfarande ser trasigt ut
+        Kontrollera ett entydigt ankare utan att flytta eller reparera det.
         """
         span = self._find_span_or_normalized_span(suggestion.old, element_text)
         if span is None:
             return SuggestedChange(
+                model_assessment=suggestion.model_assessment,
+                assessment_status=suggestion.assessment_status,
                 element_type=suggestion.element_type,
                 element_id=suggestion.element_id,
                 footnote_id=suggestion.footnote_id,
@@ -1105,29 +1162,12 @@ class JBGLangImprovSuggestorAI:
                 motivation=suggestion.motivation,
                 match_status=suggestion.match_status,
                 safe_to_apply=False,
-                safety_reason="old_not_found_exactly_in_element_text",
+                safety_reason="ambiguous_or_partial_source_anchor",
             )
 
         start, end = span
         old = suggestion.old
         new = suggestion.new
-
-        if self._looks_like_fragment_boundary(element_text, start, end):
-            expanded_start, expanded_end = self._expand_span_to_word_boundaries(element_text, start, end)
-            expanded_old = element_text[expanded_start:expanded_end]
-
-            prefix_len = start - expanded_start
-            suffix_len = expanded_end - end
-
-            expanded_new = new
-            if prefix_len > 0:
-                expanded_new = expanded_old[:prefix_len] + expanded_new
-            if suffix_len > 0:
-                expanded_new = expanded_new + expanded_old[len(expanded_old) - suffix_len:]
-
-            old = expanded_old
-            new = expanded_new
-            start, end = expanded_start, expanded_end
 
         safe = True
         reason = None
@@ -1147,6 +1187,8 @@ class JBGLangImprovSuggestorAI:
             reason = "new_overlaps_following_context"
 
         return SuggestedChange(
+            model_assessment=suggestion.model_assessment,
+            assessment_status=suggestion.assessment_status,
             element_type=suggestion.element_type,
             element_id=suggestion.element_id,
             footnote_id=suggestion.footnote_id,
@@ -1184,6 +1226,8 @@ class JBGLangImprovSuggestorAI:
 
             cleaned.append(
                 SuggestedChange(
+                    model_assessment=s.model_assessment,
+                    assessment_status=s.assessment_status,
                     element_type=s.element_type,
                     element_id=s.element_id,
                     footnote_id=s.footnote_id,
@@ -1261,6 +1305,10 @@ class JBGLangImprovSuggestorAI:
         if not old:
             return {"reject": True, "reason": "empty_old"}
 
+        source = self._get_element_text_for_suggestion(s)
+        if not s.safe_to_apply or s.match_status == "rejected" or locate_span(s.old, source) is None:
+            return {"reject": True, "reason": "ambiguous_or_partial_source_anchor"}
+
         if old == new:
             return {"reject": True, "reason": "old_equals_new"}
 
@@ -1314,7 +1362,7 @@ class JBGLangImprovSuggestorAI:
             return {"reject": True, "reason": "low_similarity_sensitive_element"}
 
         element_text = self._get_element_text_for_suggestion(s)
-        span = self._find_span_or_normalized_span(old, element_text)
+        span = self._find_span_or_normalized_span(s.old, element_text)
         if span is not None:
             start, end = span
             if self._new_overlaps_following_context(element_text, start, end, old, new):
@@ -1460,10 +1508,10 @@ class JBGLangImprovSuggestorAI:
             return True
         element = self._get_docx_element_by_id(s.element_id) or {}
         text = element.get("text") or ""
-        start = text.find(old)
-        if not old or start < 0:
+        span = locate_span(old, text)
+        if span is None:
             return False
-        end = start + len(old)
+        start, end = span
         result = text[:start] + new + text[end:]
 
         def normalized(value: str) -> str:
@@ -1658,16 +1706,10 @@ class JBGLangImprovSuggestorAI:
     # -------------------------------------------------------------------------
 
     def _match_old_against_text(self, old: str, source_text: str) -> Literal["exact", "normalized", "rejected"]:
-        if old in source_text:
-            return "exact"
-
-        normalized_old = self._normalize_text(old)
-        normalized_source = self._normalize_text(source_text)
-
-        if normalized_old and normalized_old in normalized_source:
-            return "normalized"
-
-        return "rejected"
+        span = locate_span(old, source_text)
+        if span is None:
+            return "rejected"
+        return "exact" if source_text[slice(*span)] == old else "normalized"
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -1757,6 +1799,10 @@ class JBGLangImprovSuggestorAI:
         if not s.safe_to_apply:
             payload["safe_to_apply"] = False
             payload["safety_reason"] = s.safety_reason
+        if self.assess_changes:
+            payload["assessment_status"] = s.assessment_status
+            if s.model_assessment is not None:
+                payload["model_assessment"] = asdict(s.model_assessment)
         return payload
 
     # -------------------------------------------------------------------------

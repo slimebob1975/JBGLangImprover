@@ -62,10 +62,12 @@ class TitleTests(unittest.TestCase):
         })
         lines = text.split("\n")
         self.assertEqual(lines[0], "Läsbarhet (LIX): 53,4 (svår) före granskningen och 52,4 (svår) "
-                                   "om alla förslag godtas, en förändring med \u22121,0.")
+                                   "efter granskningen (beräknat), en förändring med \u22121,0.")
         self.assertIn("Riktvärden", lines[2])
+        self.assertIn("inte ett uppmätt värde", lines[3])
+        self.assertIn("inte kunnat föras in i Word", lines[3])
         unchanged = build_readability_comment({"before": {"lix": 40.0}, "after": {"lix": 40.04}})
-        self.assertIn("om alla förslag godtas, oförändrat.", unchanged)
+        self.assertIn("efter granskningen (beräknat), oförändrat.", unchanged)
 
 
 class _FakeCompletions:

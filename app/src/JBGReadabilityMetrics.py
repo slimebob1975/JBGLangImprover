@@ -19,6 +19,11 @@ import sys
 from dataclasses import dataclass, field, asdict
 from typing import Any, Iterable, Optional
 
+try:
+    from app.src.JBGTextAnchors import locate_span
+except ModuleNotFoundError:
+    from JBGTextAnchors import locate_span
+
 
 # Standardomfång: löptext i huvuddokumentet. Rubriker räknas inte med
 # eftersom korta rubriker utan punkt skulle ge många "meningar" och sänka LIX.
@@ -211,21 +216,8 @@ def stats_for_texts(texts: Iterable[str]) -> ReadabilityStats:
 # ============================================================================
 
 def _locate(old: str, text: str) -> Optional[tuple[int, int]]:
-    """Exakt träff först, därefter träff med normaliserade blanksteg."""
-    if not old:
-        return None
-    idx = text.find(old)
-    if idx >= 0:
-        return idx, idx + len(old)
-
-    tokens = old.split()
-    if not tokens:
-        return None
-    pattern = r"\s+".join(re.escape(tok) for tok in tokens)
-    match = re.search(pattern, text)
-    if match:
-        return match.start(), match.end()
-    return None
+    """Same conservative anchor contract as validation and planning."""
+    return locate_span(old, text)
 
 
 def apply_suggestions_to_text(text: str, suggestions: list[dict]) -> tuple[str, int, int, int]:

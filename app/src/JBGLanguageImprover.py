@@ -16,6 +16,9 @@ try:
     from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
     from app.src.JBGUsageTracker import UsageTracker
     from app.src.JBGRunSummary import RunSummary
+    from app.src.JBGEditLevel import get_edit_profile, build_local_prompt
+    from app.src.JBGModelAssessment import summarize_assessments
+    from app.src.JBGQualityGuards import summarize_quality_guards
     from app.src.JBGBuildInfo import get_build_info
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -34,6 +37,9 @@ except ModuleNotFoundError:
     from JBGTrackedChangesRenderer import TrackedChangesRenderer
     from JBGUsageTracker import UsageTracker
     from JBGRunSummary import RunSummary
+    from JBGEditLevel import get_edit_profile, build_local_prompt
+    from JBGModelAssessment import summarize_assessments
+    from JBGQualityGuards import summarize_quality_guards
     from JBGBuildInfo import get_build_info
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -76,12 +82,13 @@ class JBGLanguageImprover:
         compute_readability=True,
         global_review=False,
         word_level_changes=True,
+        edit_level=None,
         **kwargs,
     ):
         self.input_path = input_path
         self.api_key = api_key
         self.model = model
-        self.prompt_policy = prompt_policy
+        self.prompt_policy = build_local_prompt(prompt_policy, edit_level)
         self.temperature = temperature
         self.include_motivations = include_motivations
         self.logger = logger
@@ -94,6 +101,8 @@ class JBGLanguageImprover:
         self.global_review = bool(global_review)
         self.word_level_changes = bool(word_level_changes)
         self.extra_kwargs = kwargs
+        self.edit_level = edit_level
+        self.edit_profile = get_edit_profile(edit_level)
 
         if self.docx_mode not in {"simple", "tracked"}:
             raise ValueError(f"Unsupported docx_mode: {self.docx_mode}")
@@ -129,6 +138,8 @@ class JBGLanguageImprover:
             prompt_customized=prompt_customized,
             compute_readability=self.compute_readability,
             global_review=self.global_review,
+            edit_level=self.edit_level,
+            edit_profile=self.edit_profile.key if self.edit_profile else None,
         )
         build = get_build_info()
         self.run_summary.app_version = build["version"]
@@ -229,6 +240,7 @@ class JBGLanguageImprover:
             allow_normalized_matches=True,
             usage_tracker=self.usage_tracker,
             usage_phase="local",
+            assess_changes=self.edit_profile is not None,
         )
 
         # Suggestorn arbetar mot strukturfilen
@@ -238,6 +250,13 @@ class JBGLanguageImprover:
 
         ai.load_structure(self.structure_json)
         ai.suggest_changes_token_aware_batching()
+        local_usage = self.usage_tracker.totals("local")
+        self.run_summary.edit_level_applied = (
+            self.edit_profile is not None and local_usage.calls > local_usage.failed_calls
+        )
+        self.logger.info("Edit level: %s; profile: %s; applied: %s",
+                         self.edit_level, self.run_summary.edit_profile,
+                         self.run_summary.edit_level_applied)
 
         if self.save_intermediate_json:
             suggestions_path = ai.save_as_json(self.suggestions_json, use_validated=True)
@@ -245,9 +264,27 @@ class JBGLanguageImprover:
             self.logger.info(f"Saved validated suggestions JSON: {suggestions_path}")
             self.logger.info(f"Saved suggestion filter report: {filter_report_path}")
 
+        if self.edit_profile is not None:
+            self.run_summary.model_assessments = summarize_assessments(
+                ai.json_suggestions or [], ai.validated_suggestions, risk_filter_active=True
+            )
+            self.logger.info("Model assessments: %s", self.run_summary.model_assessments)
+
+        self.run_summary.quality_guards = summarize_quality_guards(
+            ai.filtered_review, self.edit_profile is not None
+        )
+        self.logger.info("Quality guards: %s", self.run_summary.quality_guards)
+
+        self.run_summary.independent_corrections = {
+            "mode": "active" if self.edit_profile is not None else "disabled",
+            "parents_replaced": sum(any(i.code == "split_parent_replaced" for i in row.issues)
+                                    for row in ai.filtered_review),
+            "recovered": sum(any(i.code == "split_recovered" for i in row.issues)
+                             for row in ai.filtered_review),
+        }
         counts = self.run_summary.local_suggestions
         counts.raw = len(ai.json_suggestions or [])
-        counts.validated = len(ai.filtered_review)
+        counts.validated = len(ai.filtered_review) - self.run_summary.independent_corrections["recovered"]
         counts.accepted = len(ai.validated_suggestions)
 
         self.logger.info(f"Validated suggestions count: {len(ai.validated_suggestions)}")

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="sv">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -41,6 +41,22 @@
                 <option value="gpt-5-mini">gpt-5-mini</option>
                 <option value="gpt-4o">gpt-4o</option>
             </select>
+
+            <!-- Bearbetningsniva: styr den lokala promptinstruktionen. -->
+            <div class="edit-level-control">
+                <label for="editLevel">Bearbetningsnivå</label>
+                <div class="edit-level-slider">
+                    <input type="range" id="editLevel" min="1" max="100" step="1" value="70" disabled
+                           aria-describedby="editLevelDescription editLevelHelp editLevelScope">
+                    <div class="edit-level-tooltip" role="tooltip" id="editLevelTooltip">
+                        <strong id="editLevelTooltipValue" aria-hidden="true">70 av 100 – Noggrann</strong>
+                        <p id="editLevelDescription">Föreslår också mindre ändringar för mer exakta formuleringar, bättre flyt och färre onödiga ord.</p>
+                        <p id="editLevelHelp">På högre nivåer föreslås även små förbättringar. Tjänsten ska inte ändra text i onödan.</p>
+                        <p id="editLevelScope">Nivån gäller granskningen av enskilda textavsnitt, inte dokumentet som helhet. Skyddsreglerna gäller alltid.</p>
+                    </div>
+                </div>
+                <div class="edit-level-scale"><span aria-hidden="true">Färre ingrepp</span><output id="editLevelDisplay" for="editLevel" aria-hidden="true">Noggrann</output><span aria-hidden="true">Mer ingående</span></div>
+            </div>
 
             <label for="editablePrompt" title="Instruktionen styr förslagen inom enskilda stycken, tabellceller, textrutor, fotnoter, sidhuvuden och sidfötter. Den påverkar inte granskningen av dokumentet som helhet. Ändra standardtexten om du vill ge särskilda instruktioner.">Anpassa den lokala promptinstruktionen:</label>
             <textarea id="editablePrompt" name="editablePrompt" rows="6" placeholder="Laddar policy..." required></textarea>
@@ -101,11 +117,17 @@
             <!-- The start button!!! -->
             <button id="button" name="button" type="submit" title="Börja din språkgranskning!">Starta</button>
         </form>
-        <!-- A spinner that spins while executing -->
-        <div id="spinner-container">
-            <div class="spinner"></div>
+        <!-- Overlagget ligger utanfor det normala dokumentflodet. -->
+        <div id="spinner-container" hidden>
+            <div class="processing-card">
+                <div class="spinner" aria-hidden="true"></div>
+                <p class="processing-title" role="status" id="processingStatus">Klarspråkning pågår</p>
+                <p id="processingDetail" role="status"></p>
+                <p id="processingLevel"></p>
+                <p class="processing-time">Förfluten tid: <span id="processingElapsed">00:00</span></p>
+            </div>
         </div>
-        <p id="status"></p>
+        <p id="status" role="status"></p>
 
     </div> <!-- Wrapper -->
      <footer style="margin-top: 16px; font-size: 0.9em; color: #555; text-align: center; line-height: 1.5;">

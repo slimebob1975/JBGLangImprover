@@ -1,9 +1,17 @@
-fetch("/config")
-  .then(res => res.json())
+const configReady = fetch("/config")
+  .then(res => {
+    if (!res.ok) throw new Error("Config request failed");
+    return res.json();
+  })
   .then(data => {
     document.title = data.title;
     document.getElementById("app-title").innerText = data.title;
     showVersion(data.version);
+    return data.edit_level;
+  })
+  .catch(err => {
+    console.warn("Kunde inte hämta bearbetningsnivåer:", err);
+    return null;
   });
 
 // Version, commit och miljö under rubriken, t.ex. "Version 1.0.0 · a1b2c3d (dev)".
@@ -45,8 +53,50 @@ fetch("/me")
   })
   .catch(err => console.warn("Kunde inte hämta användarinformation:", err));
 
+// The API owns the profile boundaries and descriptions.
+let editLevelConfig = null;
+function getEditLevelProfile(level) {
+    return editLevelConfig.profiles.find(profile => level <= profile.max_level);
+}
+
+async function initEditLevel() {
+    const slider = document.getElementById("editLevel");
+    const display = document.getElementById("editLevelDisplay");
+    const description = document.getElementById("editLevelDescription");
+    const tooltipValue = document.getElementById("editLevelTooltipValue");
+    if (!slider || !display || !description || !tooltipValue) return;
+    editLevelConfig = await configReady;
+    if (!editLevelConfig) {
+        display.textContent = "Ej tillgänglig";
+        return;
+    }
+    slider.min = editLevelConfig.min;
+    slider.max = editLevelConfig.max;
+    slider.value = editLevelConfig.default;
+    slider.disabled = false;
+    function update() {
+        const {name, description: text} = getEditLevelProfile(Number(slider.value));
+        display.textContent = name;
+        tooltipValue.textContent = `${slider.value} av ${editLevelConfig.max} – ${name}`;
+        description.textContent = text;
+        slider.setAttribute("aria-valuetext", tooltipValue.textContent);
+    }
+    const container = slider.closest(".edit-level-slider");
+    slider.addEventListener("input", update);
+    if (container) {
+        container.addEventListener("pointerenter", () => container.classList.remove("tooltip-dismissed"));
+        slider.addEventListener("focus", () => container.classList.remove("tooltip-dismissed"));
+        slider.addEventListener("input", () => container.classList.remove("tooltip-dismissed"));
+        document.addEventListener("keydown", event => {
+            if (event.key === "Escape") container.classList.add("tooltip-dismissed");
+        });
+    }
+    update();
+}
+
 // Load saved API key from localStorage on page load
 document.addEventListener("DOMContentLoaded", () => {
+    initEditLevel();
     const savedKey = localStorage.getItem("openai_api_key");
     if (savedKey) {
       document.getElementById("apiKey").value = savedKey;
@@ -133,14 +183,20 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
         return;
     }
 
+    if (!editLevelConfig) {
+        updateStatus("Bearbetningsnivåerna kunde inte laddas. Ladda om sidan.", "status-error");
+        return;
+    }
+
     lockUI();
-    updateStatus("🔄 Bearbetar dokument...", "status-info");
+    startProcessing();
 
     const formData = new FormData();
     formData.append("file", file);
     formData.append("api_key", apiKey);
     formData.append("model", model);
     formData.append("editable_prompt", editablePrompt);
+    if (editLevelConfig) formData.append("edit_level", document.getElementById("editLevel").value);
     formData.append("temperature", temperature);
     formData.append("include_motivations", includeMotivations);
     formData.append("docx_mode", docxMode);
@@ -154,67 +210,58 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
             body: formData
         });
 
+        if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
         const { job_id, original_filename } = await res.json();
-        pollForResult(job_id, original_filename);
+        if (!job_id || !original_filename) throw new Error("Invalid upload response");
+        await pollForResult(job_id, original_filename);
 
     } catch (err) {
         console.error(err);
         updateStatus("❌ Tekniskt fel vid överföring.", "status-error");
+    } finally {
+        stopProcessing();
     }
 });
 
+// Poll sequentially so slow responses cannot trigger duplicate downloads.
 async function pollForResult(jobId, originalFilename) {
-    const spinner = document.getElementById("spinner-container");
-    spinner.style.display = "block";
-
-    const interval = setInterval(async () => {
-        console.log(`Kollar status för job ID: ${jobId}...`);
+    let consecutiveFailures = 0;
+    while (true) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
         try {
             const res = await fetch(`/status/${jobId}`);
             const data = await res.json();
-
-            // Show status message if present
-            if (data.status) {
-                updateStatus(data.status, "status-info");
-            }
-
-            // Error from server
             if (data.error) {
-                clearInterval(interval);
-                console.warn(`Jobb ${jobId} rapporterade fel:`, data.error);
-                updateStatus(
-                    data.status || "Ett fel uppstod vid språkgranskningen.",
-                    "status-error"
-                );
-                spinner.style.display = "none";
+                updateStatus(data.status || "Ett fel uppstod vid språkgranskningen.", "status-error");
                 return;
             }
-
-            // Not done yet
-            if (data.done === false) {
-                console.log(`Jobb ${jobId} är fortfarande under bearbetning...`);
-                return; // keep polling
+            if (!res.ok || typeof data.done !== "boolean") {
+                throw new Error("Invalid status response");
             }
-
-            // Done
-            if (data.done === true) {
-                console.log(`Jobb ${jobId} är klart. Startar nedladdning.`);
-                clearInterval(interval);
+            consecutiveFailures = 0;
+            if (data.done) {
+                updateStatus("Hämtar resultatfilen…", "status-info");
                 await downloadResult(jobId, originalFilename);
                 return;
             }
-
-            // Fallback if response shape is unexpected
-            console.warn("Oväntat svar från /status:", data);
+            updateStatus(data.status || "Dokumentet granskas och bearbetas.", "status-info");
         } catch (err) {
             console.warn(`Misslyckades med att hämta status för ${jobId}:`, err);
+            if (++consecutiveFailures >= 3) {
+                updateStatus("Kunde inte hämta status. Bearbetningen kan fortfarande pågå på servern.", "status-error");
+                return;
+            }
+            updateStatus("Kontakten med tjänsten bröts. Försöker igen…", "status-info");
         }
-    }, 5000);  // Poll every 5 seconds (adjust if you like)
+    }
 }
 
 async function downloadResult(jobId, originalFilename) {
     try {
         const response = await fetch(`/download/${jobId}`);
+        if (!response.ok || !response.headers.get("content-type")?.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) {
+            throw new Error("Invalid download response");
+        }
         const blob = await response.blob();
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
@@ -229,12 +276,44 @@ async function downloadResult(jobId, originalFilename) {
     } catch (err) {
         console.error("Download failed:", err);
         updateStatus("❌ Kunde inte hämta resultatfil.", "status-error");
-    } finally {
-        document.getElementById("spinner-container").style.display = "none";
     }
 }
 
+let processingTimer = null;
+
+function startProcessing() {
+    stopProcessing();
+    const overlay = document.getElementById("spinner-container");
+    const form = document.getElementById("uploadForm");
+    const started = performance.now();
+    const elapsed = document.getElementById("processingElapsed");
+    document.getElementById("status").textContent = "";
+    document.getElementById("processingDetail").textContent = "Dokumentet skickas till tjänsten…";
+    document.getElementById("processingLevel").textContent =
+        `Bearbetningsnivå: ${document.getElementById("editLevelDisplay").textContent}`;
+    function tick() {
+        const seconds = Math.floor((performance.now() - started) / 1000);
+        elapsed.textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    }
+    tick();
+    form.setAttribute("aria-busy", "true");
+    overlay.hidden = false;
+    processingTimer = setInterval(tick, 1000);
+}
+
+function stopProcessing() {
+    if (processingTimer !== null) clearInterval(processingTimer);
+    processingTimer = null;
+    document.getElementById("spinner-container").hidden = true;
+    document.getElementById("uploadForm").removeAttribute("aria-busy");
+}
+
 function updateStatus(message, className) {
+    if (className === "status-info" && !document.getElementById("spinner-container").hidden) {
+        const detail = document.getElementById("processingDetail");
+        if (detail.textContent !== message) detail.textContent = message;
+        return;
+    }
     const status = document.getElementById("status");
     status.className = className;
     status.textContent = message;
@@ -244,7 +323,7 @@ function updateStatus(message, className) {
 // klar eller har misslyckats. En ny körning kräver att sidan laddas om
 // (se tipset om Ctrl-Shift-R i sidfoten).
 function lockUI() {
-    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
+    const ids = ["documentFile", "apiKey", "model", "editablePrompt", "editLevel", "temperature", "includeMotivations", "globalReview", "includeAboutSection", "computeLix", "simpleMarking", "trackedChanges", "button"];
     ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = true;
@@ -277,7 +356,6 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
 
 
     const status = document.getElementById("status");
-    const spinner = document.getElementById("spinner-container");
 
     if (!file || !apiKey) {
         status.className = "status-error";
@@ -285,15 +363,15 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
         return;
     }
 
-    status.className = "status-info";
-    status.textContent = "🔄 Bearbetar dokument...";
-    spinner.style.display = "block";
+    lockUI();
+    startProcessing();
 
     const formData = new FormData();
     formData.append("file", file);
     formData.append("api_key", apiKey);
     formData.append("model", model);
     formData.append("editable_prompt", editablePrompt);
+    if (editLevelConfig) formData.append("edit_level", document.getElementById("editLevel").value);
     formData.append("temperature", temperature);
     formData.append("include_motivations", includeMotivations);
     formData.append("docx_mode", docxMode);
@@ -326,7 +404,7 @@ document.getElementById("uploadForm").addEventListener("submit_old", async (e) =
         status.className = "status-error";
         status.textContent = "❌ Tekniskt fel vid överföring.";
     } finally {
-        spinner.style.display = "none";
+        stopProcessing();
     }
 });
     

@@ -50,6 +50,49 @@ class GuiDefaultsTests(unittest.TestCase):
         self.assertNotIn("wordLevelChanges", script)
         self.assertNotIn('formData.append("word_level_changes"', script)
 
+    def test_edit_level_defaults(self):
+        slider = self.inputs["editLevel"]
+        self.assertEqual(slider["type"], "range")
+        self.assertEqual((slider["min"], slider["max"], slider["step"], slider["value"]),
+                         ("1", "100", "1", "70"))
+        self.assertIn("disabled", slider)  # Aktiveras när /config har laddats
+        self.assertIn("editLevelScope", slider["aria-describedby"])
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        self.assertEqual(script.count('formData.append("edit_level"'), 2)
+        self.assertIn("editLevelConfig.profiles.find", script)
+        self.assertIn('"editablePrompt", "editLevel", "temperature"', script)
+
+    def test_edit_level_compact_tooltip(self):
+        html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "styles" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('role="tooltip" id="editLevelTooltip"', html)
+        self.assertIn('id="editLevelTooltipValue"', html)
+        self.assertIn('display.textContent = name;', script)
+        self.assertIn('slider.setAttribute("aria-valuetext", tooltipValue.textContent)', script)
+        self.assertIn(':focus-within .edit-level-tooltip', css)
+        self.assertIn(':hover .edit-level-tooltip', css)
+        self.assertIn('event.key === "Escape"', script)
+
+    def test_processing_overlay_is_hidden_and_out_of_flow(self):
+        html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "styles" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('id="spinner-container" hidden', html)
+        self.assertIn('id="processingElapsed"', html)
+        self.assertIn('role="status" id="processingStatus"', html)
+        self.assertRegex(css, r"#spinner-container\s*\{\s*position: absolute;\s*inset: 0;")
+        self.assertIn("#spinner-container[hidden]", css)
+        self.assertIn("prefers-reduced-motion: reduce", css)
+
+    def test_processing_overlay_lifecycle(self):
+        script = (ROOT / "static" / "javascript" / "script.js").read_text(encoding="utf-8")
+        self.assertIn("lockUI();\n    startProcessing();", script)
+        self.assertIn("await pollForResult(job_id, original_filename);", script)
+        self.assertEqual(script.count("} finally {\n        stopProcessing();"), 2)
+        self.assertIn("clearInterval(processingTimer)", script)
+        self.assertIn('form.setAttribute("aria-busy", "true")', script)
+        self.assertIn('removeAttribute("aria-busy")', script)
+
     def test_python_renderer_defaults_to_word_level(self):
         from app.src.JBGTrackedChangesRenderer import TrackedChangesRenderer
         from app.src.JBGLanguageImprover import JBGLanguageImprover
@@ -67,6 +110,7 @@ class GuiDefaultsTests(unittest.TestCase):
         defaults = {name: p.default.default for name, p in inspect.signature(main.upload_file).parameters.items()
                     if hasattr(p.default, "default")}
         self.assertEqual(defaults["docx_mode"], "tracked")
+        self.assertIsNone(defaults["edit_level"])
         self.assertNotIn("word_level_changes", defaults)
         self.assertNotIn("word_level_changes", inspect.signature(main.upload_file).parameters)
 
