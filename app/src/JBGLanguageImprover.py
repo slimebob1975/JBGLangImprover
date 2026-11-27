@@ -275,9 +275,16 @@ class JBGLanguageImprover:
         )
         self.logger.info("Quality guards: %s", self.run_summary.quality_guards)
 
+        self.run_summary.independent_corrections = {
+            "mode": "active" if self.edit_profile is not None else "disabled",
+            "parents_replaced": sum(any(i.code == "split_parent_replaced" for i in row.issues)
+                                    for row in ai.filtered_review),
+            "recovered": sum(any(i.code == "split_recovered" for i in row.issues)
+                             for row in ai.filtered_review),
+        }
         counts = self.run_summary.local_suggestions
         counts.raw = len(ai.json_suggestions or [])
-        counts.validated = len(ai.filtered_review)
+        counts.validated = len(ai.filtered_review) - self.run_summary.independent_corrections["recovered"]
         counts.accepted = len(ai.validated_suggestions)
 
         self.logger.info(f"Validated suggestions count: {len(ai.validated_suggestions)}")

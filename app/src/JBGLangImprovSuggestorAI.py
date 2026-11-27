@@ -17,11 +17,13 @@ try:
     from app.src.JBGDataRetention import loggable_text
     from app.src.JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
     from app.src.JBGQualityGuards import QualityGuards
+    from app.src.JBGIndependentCorrections import independent_corrections
 except ModuleNotFoundError:
     from JBGModelClient import create_openai_client, max_parallel_model_calls
     from JBGDataRetention import loggable_text
     from JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
     from JBGQualityGuards import QualityGuards
+    from JBGIndependentCorrections import independent_corrections
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -497,7 +499,7 @@ class JBGLangImprovSuggestorAI:
 
         self._report("Alla AI-förslag är genererade, validerade och filtrerade.")
 
-    def _filter_with_quality_guards(self, validated):
+    def _filter_with_quality_guards(self, validated, *, recover=True):
         # Existing schema, span and safety checks retain precedence. Only
         # proposals accepted by the existing quality filter reach new guards.
         _, reviewed = self.quality_filter.filter(validated)
@@ -521,7 +523,66 @@ class JBGLangImprovSuggestorAI:
                 self.logger.warning("Quality guard rejected [%s:%s]: %s",
                                     row.suggestion.element_type, row.suggestion.element_id,
                                     "; ".join(errors))
+        if recover and self.assess_changes:
+            self._recover_independent_corrections(reviewed)
         return [row.suggestion for row in reviewed if row.accepted], reviewed
+
+    def _recover_independent_corrections(self, reviewed):
+        # Never recover from an unassessed or elevated-risk parent, nor from
+        # ambiguous/conflicting proposals for the same source element.
+        counts = defaultdict(int)
+        for row in reviewed:
+            counts[row.suggestion.element_id] += 1
+        for row in list(reviewed):
+            parent = row.suggestion
+            if (counts[parent.element_id] != 1 or parent.element_type != "paragraph"
+                    or parent.match_status != "exact" or not parent.safe_to_apply
+                    or parent.assessment_status != "valid" or parent.model_assessment is None
+                    or parent.model_assessment.meaning_risk != "low"
+                    or parent.model_assessment.confidence != "high"
+                    or parent.model_assessment.category != "correctness"
+                    or parent.model_assessment.requires_rewrite):
+                continue
+            # Only local modal/meaning-marker stops are eligible for recovery.
+            # Existing safety errors and whole-source protections retain precedence.
+            errors = {i.code for i in row.issues if i.severity == "error"}
+            if errors - {"guard_modality", "guard_quantifier", "guard_negation", "guard_disjunction"}:
+                continue
+            source = self._get_element_text_for_suggestion(parent)
+            candidates = independent_corrections(parent.old, parent.new, source)
+            if not candidates:
+                continue
+            old, new, motivation = candidates[0]
+            # No invented or inherited model priority: a deterministic repair
+            # is separately identified in the filter report.
+            raw = {"type": parent.element_type, "element_id": parent.element_id,
+                   "old": old, "new": new, "motivation": motivation}
+            # A bare deletion (e.g. "är " -> "") may lose its unique context
+            # during minimization. Keep the rule's short, complete anchor
+            # instead; apply the ordinary schema, stabilization and safety
+            # checks to that actual replacement without an exemption.
+            try:
+                child = self._validate_docx_suggestion(raw)
+            except ValueError:
+                continue
+            child = self._stabilize_span_with_element_context(child, source)
+            if (not child.safe_to_apply or child.match_status != "exact"
+                    or source.count(child.old) != 1 or not child.new.strip()):
+                continue
+            children = self._validate_and_clean_suggestions([child])
+            if len(children) != 1:
+                continue
+            accepted, child_rows = self._filter_with_quality_guards(children, recover=False)
+            if not accepted:
+                continue
+            # Replace, never supplement, the parent. Other edits are deliberately
+            # discarded; their independence has not been established.
+            row.accepted = False
+            row.issues.append(SuggestionIssue("warning", "split_parent_replaced",
+                "Ersätter det sammansatta förslaget med en självständig rättelse; övriga ändringar utelämnas."))
+            child_rows[0].issues.append(SuggestionIssue("warning", "split_recovered",
+                "Självständig rättelse från sammansatt förslag, kontrollerad på nytt."))
+            reviewed.extend(child_rows)
 
     def _call_model_for_chunks(self, client, system_msg, chunks) -> list[Optional[str]]:
         """

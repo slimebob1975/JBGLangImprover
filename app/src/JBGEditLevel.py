@@ -24,11 +24,11 @@ PRIORITY_DEFINITIONS = {
     "cosmetic": "Likvärdig stilvariant utan konkret förbättringsnytta.",
 }
 PROFILES = (
-    EditProfile(20, "very_conservative", "Mycket varsam", "Rättar entydiga språkfel och allvarliga begriplighetsproblem."),
-    EditProfile(40, "conservative", "Varsam", "Inkluderar även betydande förbättringar av begripligheten."),
-    EditProfile(60, "balanced", "Balanserad", "Inkluderar även tydligt nyttiga förbättringar av ordval och meningsbyggnad."),
-    EditProfile(80, "thorough", "Noggrann", "Inkluderar även mindre förbättringar av precision, flyt och språklig ekonomi."),
-    EditProfile(100, "very_thorough", "Mycket noggrann", "Inkluderar även subtila detaljförbättringar med konkret nytta."),
+    EditProfile(20, "very_conservative", "Mycket varsam", "Föreslår rättelser av tydliga språkfel och formuleringar som är mycket svåra att förstå."),
+    EditProfile(40, "conservative", "Varsam", "Föreslår också ändringar som gör texten betydligt lättare att förstå."),
+    EditProfile(60, "balanced", "Balanserad", "Föreslår också enklare ord och tydligare meningar."),
+    EditProfile(80, "thorough", "Noggrann", "Föreslår också mindre ändringar för mer exakta formuleringar, bättre flyt och färre onödiga ord."),
+    EditProfile(100, "very_thorough", "Mycket noggrann", "Föreslår också små förbättringar av exempelvis skiljetecken och ordval, när de gör texten bättre."),
 )
 
 
@@ -52,8 +52,8 @@ _LEVEL_CRITERIA = (
     ("critical", PRIORITY_DEFINITIONS["critical"]),
     ("significant", PRIORITY_DEFINITIONS["significant"]),
     ("moderate", PRIORITY_DEFINITIONS["moderate"] + " Exempelvis ordval, syftning och meningsbyggnad."),
-    ("minor", PRIORITY_DEFINITIONS["minor"] + " Exempelvis precision, flyt och språklig ekonomi."),
-    ("minor", "Även subtila detaljförbättringar av exempelvis interpunktion, småord och språkliga ojämnheter, endast med konkret nytta."),
+    ("minor", PRIORITY_DEFINITIONS["minor"] + " Exempelvis mer exakta formuleringar, bättre flyt och färre onödiga ord."),
+    ("minor", "Även små förbättringar av skiljetecken, ordval och språkliga ojämnheter, endast när de gör texten bättre."),
 )
 PROMPT_PROFILES = {
     profile.key: "\n".join(f"- {criterion}" for _, criterion in _LEVEL_CRITERIA[:i + 1])
@@ -82,7 +82,12 @@ def build_local_prompt(base_prompt: str, level: Optional[int]) -> str:
         return base_prompt
     return (
         base_prompt + "\n\n## Bearbetningsnivå (lokal granskning)\n"
+        + f"Önskad ingreppsnivå: {level}/100 (1 = minst, 100 = mest ingående).\n"
         + f"Profil: {profile.name}.\n"
+        + "Använd det exakta värdet även inom profilen: ju högre värde, desto mindre behöver "
+        "den konkreta nyttan av en frivillig ändring vara för att du ska föreslå den. "
+        "Profilen anger den övergripande inriktningen. Nivån ändrar inte kraven på säkerhet "
+        "eller på nödvändiga rättelser.\n"
         + "Föreslå endast ändringar som uppfyller något av följande kumulativa kriterier:\n"
         + PROMPT_PROFILES[profile.key]
         + "\nObligatoriska terminologiregler och entydiga språkfel gäller på alla nivåer, "

@@ -143,3 +143,25 @@ def test_default_profile_matches_static_gui():
     html = (Path(main.BASE_DIR) / 'templates' / 'index.html').read_text(encoding='utf-8')
     assert f'{DEFAULT_LEVEL} av 100 – {profile.name}' in html
     assert profile.description in html
+
+
+def test_every_level_has_its_own_prompt_even_within_profile():
+    prompts = [build_local_prompt('base', level) for level in range(1, 101)]
+    assert len(set(prompts)) == 100
+    for level, prompt in enumerate(prompts, start=1):
+        assert f'Önskad ingreppsnivå: {level}/100' in prompt
+        assert 'Använd det exakta värdet även inom profilen' in prompt
+    assert get_edit_profile(10) == get_edit_profile(12)
+    assert prompts[9] != prompts[11]
+
+
+def test_plain_language_descriptions_and_report():
+    from app.src.JBGEditLevel import PROFILES
+    from app.src.JBGAboutSectionRenderer import build_about_section_blocks
+    for profile in PROFILES:
+        assert profile.description.startswith('Föreslår')
+        assert 'ekonomi' not in profile.description
+        assert 'ekonomi' not in build_local_prompt('base', profile.max_level)
+        blocks = build_about_section_blocks({'edit_level': profile.max_level,
+                                             'edit_level_applied': True}, False)
+        assert profile.description in '\n'.join(block.text for block in blocks)

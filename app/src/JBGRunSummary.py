@@ -59,6 +59,7 @@ class RunSummary:
     edit_level_applied: bool = False
     model_assessments: Optional[dict[str, Any]] = None
     quality_guards: Optional[dict[str, Any]] = None
+    independent_corrections: Optional[dict[str, Any]] = None
 
     def finish(self, succeeded: bool, error: Optional[str] = None) -> None:
         self.finished_at = _now()

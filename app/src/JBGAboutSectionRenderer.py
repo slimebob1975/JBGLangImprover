@@ -286,7 +286,7 @@ def build_about_section_blocks(summary: dict, tracked: bool) -> list[AboutBlock]
         if summary.get("edit_level_applied"):
             blocks.append(AboutBlock("paragraph", [(
                 profile.description + " Nivån styr instruktionen för den lokala språkgranskningen, "
-                "inte antalet ändringar. Skyddsreglerna gäller oförändrat.", False)]))
+                "inte ett visst antal ändringar. Skyddsreglerna gäller alltid.", False)]))
         else:
             blocks.append(AboutBlock("paragraph", [(
                 "Nivån registrerades men tillämpades inte i den lokala granskningen.", False)]))
