@@ -1,4 +1,4 @@
-"""Advisory model assessments; never a backend safety verdict."""
+"""Model assessments; low risk never overrides backend safety checks."""
 from dataclasses import dataclass
 from typing import Optional
 
@@ -40,7 +40,7 @@ def parse_assessment(item: dict) -> tuple[Optional[ModelAssessment], str]:
 
 def assessment_prompt() -> str:
     return (
-        "\n\n## Modellbedömning (endast diagnostik)\n"
+        "\n\n## Modellbedömning (oberoende av bearbetningsnivå)\n"
         "Behåll den befintliga JSON-listan och alla tidigare obligatoriska fält. "
         "Lägg till objektet model_assessment i varje redan motiverat ändringsförslag. "
         "Bedöm förslaget oberoende av vald bearbetningsnivå. "
@@ -64,7 +64,7 @@ def assessment_prompt() -> str:
     )
 
 
-def summarize_assessments(raw, accepted) -> dict:
+def summarize_assessments(raw, accepted, *, risk_filter_active=False) -> dict:
     def count(items):
         counts = {"valid": 0, "missing": 0, "invalid": 0,
                   "by_priority": {p: 0 for p in PRIORITIES}}
@@ -73,5 +73,5 @@ def summarize_assessments(raw, accepted) -> dict:
             if assessment is not None:
                 counts["by_priority"][assessment.priority] += 1
         return counts
-    return {"mode": "shadow", "raw": count(parse_assessment(item) for item in raw),
+    return {"mode": "priority_shadow_risk_active" if risk_filter_active else "shadow", "raw": count(parse_assessment(item) for item in raw),
             "accepted": count((s.model_assessment, s.assessment_status) for s in accepted)}

@@ -16,10 +16,12 @@ try:
     from app.src.JBGModelClient import create_openai_client, max_parallel_model_calls
     from app.src.JBGDataRetention import loggable_text
     from app.src.JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
+    from app.src.JBGQualityGuards import QualityGuards
 except ModuleNotFoundError:
     from JBGModelClient import create_openai_client, max_parallel_model_calls
     from JBGDataRetention import loggable_text
     from JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
+    from JBGQualityGuards import QualityGuards
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -429,7 +431,7 @@ class JBGLangImprovSuggestorAI:
             parsed = self._parse_model_response(raw_text)
             validated = self._postprocess_suggestions(parsed)
 
-            accepted, reviewed = self.quality_filter.filter(validated)
+            accepted, reviewed = self._filter_with_quality_guards(validated)
 
             self.json_suggestions = parsed
             self.validated_suggestions = accepted
@@ -489,11 +491,37 @@ class JBGLangImprovSuggestorAI:
         self.json_suggestions = self._deduplicate_raw_suggestions(all_raw_suggestions)
         all_validated = self._deduplicate_validated_suggestions(all_validated)
 
-        accepted, reviewed = self.quality_filter.filter(all_validated)
+        accepted, reviewed = self._filter_with_quality_guards(all_validated)
         self.validated_suggestions = accepted
         self.filtered_review = reviewed
 
         self._report("Alla AI-förslag är genererade, validerade och filtrerade.")
+
+    def _filter_with_quality_guards(self, validated):
+        # Existing schema, span and safety checks retain precedence. Only
+        # proposals accepted by the existing quality filter reach new guards.
+        _, reviewed = self.quality_filter.filter(validated)
+        guards = QualityGuards(self.json_structured_document.get("elements", []))
+
+        def normalize_dates(text):
+            # Reuse the existing recognized date formats, but preserve every
+            # occurrence and its order for the numeric guard.
+            return self._WRITTEN_DATE_RE.sub(
+                lambda m: f"{m.group(3)}-{self._SWEDISH_MONTHS[m.group(2).lower()]:02d}-{int(m.group(1)):02d}", text)
+
+        for row in reviewed:
+            if not row.accepted:
+                continue
+            extra = guards.review(row.suggestion, self._find_span_or_normalized_span,
+                                  normalize_dates, assess_changes=self.assess_changes)
+            row.issues.extend(SuggestionIssue(i.severity, i.code, i.message) for i in extra)
+            errors = [i.code for i in extra if i.severity == "error"]
+            if errors:
+                row.accepted = False
+                self.logger.warning("Quality guard rejected [%s:%s]: %s",
+                                    row.suggestion.element_type, row.suggestion.element_id,
+                                    "; ".join(errors))
+        return [row.suggestion for row in reviewed if row.accepted], reviewed
 
     def _call_model_for_chunks(self, client, system_msg, chunks) -> list[Optional[str]]:
         """

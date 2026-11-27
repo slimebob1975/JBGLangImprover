@@ -53,11 +53,12 @@ class RunSummary:
     # LIX som kommentar vid titeln, när avsnittet Om klarspråkningen inte läggs till
     lix_comment: Optional[dict[str, Any]] = None
 
-    # Selected level controls local prompts; model assessments are advisory.
+    # Selected level controls local prompts; priority is advisory, risk is gated.
     edit_level: Optional[int] = None
     edit_profile: Optional[str] = None
     edit_level_applied: bool = False
     model_assessments: Optional[dict[str, Any]] = None
+    quality_guards: Optional[dict[str, Any]] = None
 
     def finish(self, succeeded: bool, error: Optional[str] = None) -> None:
         self.finished_at = _now()

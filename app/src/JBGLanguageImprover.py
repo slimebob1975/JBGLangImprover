@@ -18,6 +18,7 @@ try:
     from app.src.JBGRunSummary import RunSummary
     from app.src.JBGEditLevel import get_edit_profile, build_local_prompt
     from app.src.JBGModelAssessment import summarize_assessments
+    from app.src.JBGQualityGuards import summarize_quality_guards
     from app.src.JBGBuildInfo import get_build_info
     from app.src.JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from app.src.JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -38,6 +39,7 @@ except ModuleNotFoundError:
     from JBGRunSummary import RunSummary
     from JBGEditLevel import get_edit_profile, build_local_prompt
     from JBGModelAssessment import summarize_assessments
+    from JBGQualityGuards import summarize_quality_guards
     from JBGBuildInfo import get_build_info
     from JBGAboutSectionRenderer import AboutSectionRenderer, build_about_section_blocks
     from JBGGlobalAnalyzerAI import JBGGlobalAnalyzerAI
@@ -264,9 +266,14 @@ class JBGLanguageImprover:
 
         if self.edit_profile is not None:
             self.run_summary.model_assessments = summarize_assessments(
-                ai.json_suggestions or [], ai.validated_suggestions
+                ai.json_suggestions or [], ai.validated_suggestions, risk_filter_active=True
             )
             self.logger.info("Model assessments: %s", self.run_summary.model_assessments)
+
+        self.run_summary.quality_guards = summarize_quality_guards(
+            ai.filtered_review, self.edit_profile is not None
+        )
+        self.logger.info("Quality guards: %s", self.run_summary.quality_guards)
 
         counts = self.run_summary.local_suggestions
         counts.raw = len(ai.json_suggestions or [])
