@@ -62,7 +62,7 @@ def build_readability_comment(readability: dict) -> str:
     first += f" före granskningen och {_fmt(after_lix)}"
     if after.get("band"):
         first += f" ({after['band'].lower()})"
-    first += " om alla förslag godtas"
+    first += " efter granskningen (beräknat)"
     if before_lix is not None and after_lix is not None:
         delta = round(round(after_lix, 1) - round(before_lix, 1), 1)
         if delta:
@@ -78,6 +78,9 @@ def build_readability_comment(readability: dict) -> str:
         "Rubriker, sidhuvuden, sidfötter och fotnoter räknas inte med.",
         "Riktvärden: under 30 mycket lättläst, 30–40 lättläst, 40–50 medelsvår, "
         "50–60 svår och över 60 mycket svår.",
+        "Värdet efter granskningen beräknas utifrån de förslag som klarat kontrollerna "
+        "och kan tillämpas i beräkningen, även om vissa inte kunnat föras in i Word. "
+        "Det är därför inte ett uppmätt värde för den färdiga Word-filen.",
     ])
 
 

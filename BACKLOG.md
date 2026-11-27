@@ -2,6 +2,17 @@
 
 ## Known issues
 
+### Follow-up after edit-level pilot (patches 1–5b.1)
+
+- [ ] Investigate unapplied footnote proposals: run U (commit `9068f50`, level 70) reported 94 accepted, 75 applied, 19 failed, of which 13 were recorded as unsafe Word spans. The remaining six failures need per-proposal diagnostics; verify the suspected footnote link before changing the renderer. Do not weaken anchor checks to increase coverage.
+- [ ] Add structured per-proposal planning/rendering outcomes (stable element ID, reason, applied/skipped) so every failure can be accounted for, including non-XML-span failures. Keep sensitive text out of production logs.
+- [ ] Evaluate linguistic usefulness and preservation of meaning on varied real documents in the organization. The working target is roughly 85–90% useful/correct suggestions, not a measured result or a guarantee; technical placement errors are not part of that tolerance. Include missed clear errors and actual user acceptance/rejection.
+- [ ] Compare models and latency/token usage on a fixed set of documents if pilot feedback warrants it. Reuse frozen proposals for deterministic backend comparisons; avoid attributing stochastic run differences to code alone.
+- [ ] Revisit exact-value calibration only if users find the current five profiles plus exact numeric prompt insufficient. Deferred: separate necessity/improvement-value assessments and deterministic thresholds (former 5c–5d). No quota and no per-proposal extra model call planned.
+- [ ] Consider extending independent-correction recovery only for demonstrated recurring cases; keep safety conditions and avoid general speculative splitting.
+- [ ] Check LIX simulation versus actual rendered text if users require a measured post-rendering value. Current report explicitly labels the simulation.
+
+
 - [ ] The comment module does add comments to footnotes changes, but they do not render properly in Word
 - [ ] `self_overlap_or_merge_risk` rejects common word swaps where the new word is the start of the old one, e.g. `detta` -> `det` (found while testing; pre-existing)
 - [ ] Decide whether replacing a pronoun with what it refers to should pass the similarity check, e.g. `de` -> `Arbetsförmedlingen` in fact boxes (test run c7c86075). It is a common clarity fix, but the replacement is much longer than the original, so today it is rejected as `low_similarity`

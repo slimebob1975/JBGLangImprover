@@ -241,7 +241,7 @@ class AboutSectionContentTests(unittest.TestCase):
             ["Förslag som förts in i dokumentet", "91"],
         ])
         self.assertEqual(self.table_after(blocks, "Läsbarhet (LIX)"), [
-            ["Del av dokumentet", "Före", "Om alla förslag godtas", "Förändring"],
+            ["Del av dokumentet", "Före", "Efter (beräknat)", "Förändring"],
             ["Hela dokumentet", "51,7 (svår)", "51,6 (svår)", "\u22120,1"],
         ])
         # Avsnittet slutar med ett stycke (bokmärkets slut) med instruktionen
@@ -250,6 +250,30 @@ class AboutSectionContentTests(unittest.TestCase):
         # Tabellrubriker hålls ihop med tabellen
         self.assertTrue(all(b.keep_with_next for b in blocks
                             if b.kind == "paragraph" and b.text in ("Anrop och tokens", "Förslag", "Läsbarhet (LIX)")))
+
+    def test_report_distinguishes_proposals_and_rendered_changes(self):
+        summary = copy.deepcopy(REAL_RUN_SUMMARY)
+        summary.update(edit_level=70, edit_level_applied=True)
+        summary["local_suggestions"].update(accepted=94, applied=75, failed=19)
+        summary["word_level_diagnostics"] = {
+            "enabled": True, "word_level": 64, "span_fallback": 11,
+            "unsafe_span_skipped": 13,
+            "unsafe_span_elements": {"noBreakHyphen": 5, "lastRenderedPageBreak": 7},
+        }
+        blocks = build_about_section_blocks(summary, tracked=True)
+        texts = "\n".join(b.text for b in blocks)
+        self.assertIn("70 av 100 – Noggrann", texts)
+        self.assertIn("olika granskningar ge olika förslag", texts)
+        self.assertIn("Nivån påverkar inte den globala granskningen", texts)
+        self.assertIn("inte ett uppmätt värde", texts)
+        self.assertIn("Alla uteblivna förslag behöver inte bero på dessa element", texts)
+        rows = self.table_after(blocks, "Förslag")
+        self.assertIn(["Förslag som klarade kontrollerna", "94"], rows)
+        self.assertIn(["Förslag som förts in i dokumentet", "75"], rows)
+        self.assertIn(["Förslag som inte kunde föras in", "19"], rows)
+        rows = self.table_after(blocks, "Ordnivåändringar med säker spann-fallback")
+        self.assertIn(["Skyddat: Hårt bindestreck (w:noBreakHyphen)", "5"], rows)
+        self.assertIn(["Skyddat: Sparad sidbrytning (w:lastRenderedPageBreak)", "7"], rows)
 
     def test_cached_tokens_are_shown_when_present(self):
         # Testkörningen ba144f3d: 56 704 av 60 817 tokens kom från cache
