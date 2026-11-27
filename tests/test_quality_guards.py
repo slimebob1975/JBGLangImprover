@@ -177,7 +177,11 @@ def test_full_pipeline_rejects_risk_and_persists_reason(tmp_path):
 
 
 def test_repeated_anchor_cannot_bypass_protected_context():
-    row = review("En jämförelse med mer strukturerad information. Vi behöver mer hjälp.", "mer", "")
+    ai = suggestor([element("En jämförelse med mer strukturerad information. Vi behöver mer hjälp.")])
+    # Ambiguous anchors now fail even before the quality guards.
+    assert not ai._postprocess_suggestions([proposal("mer", "")])
+    row = review("En jämförelse med mer strukturerad information. Vi behöver mer hjälp.",
+                 "mer strukturerad information", "strukturerad information")
     assert not row.accepted
     assert "guard_comparative" in {i.code for i in row.issues}
 

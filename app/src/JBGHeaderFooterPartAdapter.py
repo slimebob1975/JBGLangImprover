@@ -4,6 +4,11 @@ from typing import Optional
 from lxml import etree
 
 try:
+    from app.src.JBGTextAnchors import verify_plan_prefix
+except ModuleNotFoundError:
+    from JBGTextAnchors import verify_plan_prefix
+
+try:
     from app.src.JBGDocxPackage import NSMAP, DocxPackage
     from app.src.JBGChangePlanner import ChangePlan
     from app.src.JBGDocumentPartAdapter import ParagraphModel, DocumentPartAdapter
@@ -79,6 +84,7 @@ class HeaderFooterPartAdapter(DocumentPartAdapter):
 
     def locate_plan_nodes(self, plan: ChangePlan) -> dict:
         model = self.get_paragraph_model_for_plan(plan)
+        verify_plan_prefix(plan, model.visible_text)
         overlapping_nodes = [
             node
             for node in model.nodes

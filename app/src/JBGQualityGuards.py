@@ -228,19 +228,13 @@ class QualityGuards:
                 and (element.get("table_index"), element.get("col_index")) in self.system_columns):
             add("guard_system_name", "Skyddar innehållet i en uttryckligen namngiven systemkolumn.")
 
-        # The existing matcher may choose a particular repeated anchor. Test
-        # every exact occurrence, so a protected occurrence cannot be bypassed
-        # by relying on a different occurrence's benign context.
-        spans = [(m.start(), m.start() + len(suggestion.old)) for m in re.finditer(
-            "(?=" + re.escape(suggestion.old) + ")", source)] if suggestion.old else []
-        if not spans:
-            span = find_span(suggestion.old, source)
-            if span is not None:
-                spans = [span]
-        if not spans:
-            add("guard_anchor_unavailable", "Ändringen kan inte förankras vid kvalitetskontroll.")
+        # Reuse the same unique anchor contract as validation and planning.
+        span = find_span(suggestion.old, source)
+        if span is None:
+            add("guard_anchor_unavailable", "Ändringen saknar ett entydigt textankare vid kvalitetskontroll.")
             return list(issues.values())
 
+        spans = [span]
         for start, end in spans:
             before = source
             after = source[:start] + suggestion.new + source[end:]

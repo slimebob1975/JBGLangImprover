@@ -78,7 +78,7 @@ class _SlowModel:
 
 def _structure(path, count=6):
     elements = [{"type": "paragraph", "element_id": f"paragraph_{i}",
-                 "text": "Mening som fyller ut delen. " * 70} for i in range(1, count + 1)]
+                 "text": "Mening som fyller ut delen. " + "Text som fyller ut delen. " * 69} for i in range(1, count + 1)]
     path.write_text(json.dumps({"type": "docx", "elements": elements}), encoding="utf-8")
 
 
@@ -158,7 +158,7 @@ class GlobalAlongsideLocalTests(unittest.TestCase):
             source = Path(tmp) / "rapport.docx"
             document = Document()
             for i in range(8):
-                document.add_paragraph("Mening som fyller ut delen. " * 70)
+                document.add_paragraph("Mening som fyller ut delen. " + "Text som fyller ut delen. " * 69)
             document.save(source)
 
             model = _SlowModel(delay=0.3)

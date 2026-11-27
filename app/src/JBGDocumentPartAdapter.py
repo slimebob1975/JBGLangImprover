@@ -4,6 +4,11 @@ from typing import Optional, Literal
 from lxml import etree
 
 try:
+    from app.src.JBGTextAnchors import verify_plan_prefix
+except ModuleNotFoundError:
+    from JBGTextAnchors import verify_plan_prefix
+
+try:
     from app.src.JBGDocxPackage import W_NS, NSMAP, DocxPackage
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, NSMAP, DocxPackage
@@ -119,6 +124,7 @@ class DocumentPartAdapter:
         Används senare av renderers för kirurgisk XML-redigering.
         """
         model = self.get_paragraph_model_for_plan(plan)
+        verify_plan_prefix(plan, model.visible_text)
         anchor_start = plan.anchor.start
         anchor_end = plan.anchor.end
 

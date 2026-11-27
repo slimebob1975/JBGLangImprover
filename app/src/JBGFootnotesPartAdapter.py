@@ -4,6 +4,11 @@ from typing import Optional, Literal
 from lxml import etree
 
 try:
+    from app.src.JBGTextAnchors import verify_plan_prefix
+except ModuleNotFoundError:
+    from JBGTextAnchors import verify_plan_prefix
+
+try:
     from app.src.JBGDocxPackage import W_NS, NSMAP, DocxPackage
 except ModuleNotFoundError:
     from JBGDocxPackage import W_NS, NSMAP, DocxPackage
@@ -101,6 +106,39 @@ class FootnotesPartAdapter:
             raise ValueError(f"Footnote id={footnote_id} not found in footnotes.xml")
 
         return self._build_footnote_model(footnote_element, footnote_id)
+
+    def locate_editable_anchor(self, plan, model, paragraph_models):
+        """Map the extractor's footnote offsets to actual editable nodes.
+
+        The extractor concatenates w:t and hard hyphens, not paragraph
+        separators or tabs. Never search again in individual paragraphs.
+        Reject anchors crossing unsupported content or paragraph boundaries.
+        """
+        source_parts = []
+        source_nodes = []
+        cursor = 0
+        for node in model.footnote_element.iter(f"{{{W_NS}}}t", f"{{{W_NS}}}noBreakHyphen"):
+            text = "-" if node.tag == f"{{{W_NS}}}noBreakHyphen" else (node.text or "")
+            if text:
+                source_parts.append(text)
+                source_nodes.append((node, cursor, cursor + len(text)))
+                cursor += len(text)
+        verify_plan_prefix(plan, "".join(source_parts))
+        start, end = plan.anchor.start, plan.anchor.end
+        covered = [(node, a, b) for node, a, b in source_nodes if a < end and start < b]
+        if not covered:
+            raise ValueError("No source nodes for footnote anchor")
+        for pm in paragraph_models:
+            editable = {node.element: node for node in pm["editable_nodes"] if node.kind == "text"}
+            if any(node not in editable for node, _, _ in covered):
+                continue
+            first, a, _ = covered[0]
+            last, b, _ = covered[-1]
+            local_start = editable[first].start + start - a
+            local_end = editable[last].start + end - b
+            if pm["editable_text"][local_start:local_end] == plan.old_text:
+                return pm, {"start": local_start, "end": local_end}
+        raise ValueError("Footnote anchor crosses unsupported content or paragraphs")
 
     def locate_plan_nodes(self, plan: ChangePlan) -> dict:
         """

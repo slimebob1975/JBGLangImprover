@@ -3,8 +3,10 @@ from typing import Optional, Literal
 
 try:
     from app.src.JBGLangImprovSuggestorAI import SuggestedChange
+    from app.src.JBGTextAnchors import locate_span
 except ModuleNotFoundError:
     from JBGLangImprovSuggestorAI import SuggestedChange
+    from JBGTextAnchors import locate_span
 
 
 # ============================================================================
@@ -105,6 +107,8 @@ class ChangePlanner:
     # ------------------------------------------------------------------
 
     def _build_docx_plan(self, suggestion: SuggestedChange) -> ChangePlan:
+        if not suggestion.safe_to_apply or suggestion.match_status == "rejected":
+            raise ValueError("Suggestion marked unsafe or rejected")
         element = self._get_docx_element(suggestion.element_id)
         if element is None:
             raise ValueError(f"Unknown element_id: {suggestion.element_id}")
@@ -123,7 +127,7 @@ class ChangePlanner:
         )
 
         diff_segments = self.diff_engine.build_diff(
-            old_text=suggestion.old,
+            old_text=anchor.matched_text,
             new_text=suggestion.new,
         )
 
@@ -152,7 +156,7 @@ class ChangePlanner:
         return ChangePlan(
             target=target,
             source_text=source_text,
-            old_text=suggestion.old,
+            old_text=anchor.matched_text,
             new_text=suggestion.new,
             motivation=suggestion.motivation,
             anchor=anchor,
@@ -166,70 +170,13 @@ class ChangePlanner:
     # ------------------------------------------------------------------
 
     def _locate_anchor(self, source_text: str, old_text: str, match_status: str) -> TextAnchor:
-        exact_index = source_text.find(old_text)
-        if exact_index != -1:
-            return TextAnchor(
-                start=exact_index,
-                end=exact_index + len(old_text),
-                matched_text=old_text,
-                match_strategy="exact",
-            )
-
-        normalized_span = self._find_normalized_span(source_text, old_text)
-        if normalized_span is not None:
-            start, end, matched = normalized_span
-            return TextAnchor(
-                start=start,
-                end=end,
-                matched_text=matched,
-                match_strategy="normalized",
-            )
-
-        raise ValueError("Could not locate old_text within source_text")
-
-    def _find_normalized_span(self, source_text: str, old_text: str) -> Optional[tuple[int, int, str]]:
-        normalized_old = self._normalize_text(old_text)
-        if not normalized_old:
-            return None
-
-        source_spans = self._normalized_char_map(source_text)
-        normalized_source = "".join(char for _, char in source_spans)
-
-        idx = normalized_source.find(normalized_old)
-        if idx == -1:
-            return None
-
-        start_original = source_spans[idx][0]
-        end_original = source_spans[idx + len(normalized_old) - 1][0] + 1
-        matched_text = source_text[start_original:end_original]
-        return start_original, end_original, matched_text
-
-    def _normalized_char_map(self, text: str) -> list[tuple[int, str]]:
-        result: list[tuple[int, str]] = []
-        previous_was_space = False
-
-        for i, ch in enumerate(text.replace("\u00a0", " ")):
-            if ch.isspace():
-                if not previous_was_space:
-                    result.append((i, " "))
-                previous_was_space = True
-            else:
-                result.append((i, ch))
-                previous_was_space = False
-
-        while result and result[0][1] == " ":
-            result.pop(0)
-        while result and result[-1][1] == " ":
-            result.pop()
-
-        return result
-
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        import re
-        text = text.replace("\u00a0", " ")
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
+        span = locate_span(old_text, source_text)
+        if span is None:
+            raise ValueError("Ambiguous, partial or missing old_text anchor")
+        start, end = span
+        matched = source_text[start:end]
+        return TextAnchor(start=start, end=end, matched_text=matched,
+                          match_strategy="exact" if matched == old_text else "normalized")
 
     # ------------------------------------------------------------------
     # Metadata / specialfall

@@ -7,7 +7,7 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 import time
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Optional, Literal, Any
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,12 +18,14 @@ try:
     from app.src.JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
     from app.src.JBGQualityGuards import QualityGuards
     from app.src.JBGIndependentCorrections import independent_corrections
+    from app.src.JBGTextAnchors import locate_span, unique_exact_span, unique_normalized_span
 except ModuleNotFoundError:
     from JBGModelClient import create_openai_client, max_parallel_model_calls
     from JBGDataRetention import loggable_text
     from JBGModelAssessment import ModelAssessment, parse_assessment, assessment_prompt
     from JBGQualityGuards import QualityGuards
     from JBGIndependentCorrections import independent_corrections
+    from JBGTextAnchors import locate_span, unique_exact_span, unique_normalized_span
 
 MAX_TOKEN_PER_CALL = 8000
 
@@ -823,7 +825,7 @@ class JBGLangImprovSuggestorAI:
         match_status = self._match_old_against_text(old, element_text)
 
         if self.strict_validation and match_status == "rejected":
-            raise ValueError(f"'old' text not found in source element {element_id}")
+            raise ValueError(f"'old' text has no unique, complete anchor in source element {element_id}")
 
         assessment, status = parse_assessment(item) if self.assess_changes else (None, "missing")
         return SuggestedChange(
@@ -843,7 +845,22 @@ class JBGLangImprovSuggestorAI:
     # -------------------------------------------------------------------------
 
     def _minimize_and_filter_suggestion(self, suggestion: SuggestedChange) -> Optional[SuggestedChange]:
-        minimized = self._minimize_change_span(suggestion)
+        element_text = self._get_element_text_for_suggestion(suggestion)
+        original_span = locate_span(suggestion.old, element_text)
+        if original_span is None:
+            return replace(suggestion, safe_to_apply=False,
+                           safety_reason="ambiguous_or_partial_source_anchor")
+        start, end = original_span
+        if suggestion.old != element_text[start:end]:
+            # Keep the actual source whitespace and the complete anchor.
+            # Never minimize against a normalized representation.
+            if not self.allow_normalized_matches:
+                return replace(suggestion, safe_to_apply=False,
+                               safety_reason="normalized_match_disabled")
+            suggestion = replace(suggestion, old=element_text[start:end])
+            minimized = suggestion
+        else:
+            minimized = self._minimize_change_span(suggestion)
         if minimized is None:
             return None
 
@@ -854,7 +871,17 @@ class JBGLangImprovSuggestorAI:
             )
             return None
 
-        element_text = self._get_element_text_for_suggestion(minimized)
+        # A minimized string is a valid anchor only if it is unique, lies
+        # inside the original span, and produces exactly the same full text.
+        candidate_span = unique_exact_span(minimized.old, element_text)
+        expected = element_text[:start] + suggestion.new + element_text[end:]
+        if candidate_span is not None:
+            a, b = candidate_span
+            actual = element_text[:a] + minimized.new + element_text[b:]
+        if (candidate_span is None or not (start <= a <= b <= end)
+                or actual != expected):
+            # Retain the original context rather than guessing a position.
+            minimized = suggestion
         stabilized = self._stabilize_span_with_element_context(minimized, element_text)
 
         if not stabilized.safe_to_apply:
@@ -1033,85 +1060,16 @@ class JBGLangImprovSuggestorAI:
         return i
 
     def _find_exact_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
-        idx = element_text.find(old_text)
-        if idx == -1:
-            return None
-        return idx, idx + len(old_text)
+        return unique_exact_span(old_text, element_text)
 
     def _find_normalized_span_in_element_text(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
-        """
-        Försöker hitta ett ungefärligt spann i originaltexten när endast normaliserad matchning lyckas.
-        Returnerar första spannet vars normaliserade innehåll matchar normaliserad old_text.
-        """
-        target = self._normalize_text(old_text)
-        if not target:
-            return None
-
-        n = len(element_text)
-        min_len = max(1, len(old_text) - 8)
-        max_len = min(n, len(old_text) + 16)
-
-        for start in range(n):
-            for end in range(start + min_len, min(n, start + max_len) + 1):
-                candidate = element_text[start:end]
-                if self._normalize_text(candidate) == target:
-                    return start, end
-
-        return None
+        return unique_normalized_span(old_text, element_text)
 
     def _find_span_or_normalized_span(self, old_text: str, element_text: str) -> Optional[tuple[int, int]]:
-        span = self._find_exact_span_in_element_text(old_text, element_text)
-        if span is not None:
-            return span
-        return self._find_normalized_span_in_element_text(old_text, element_text)
+        return locate_span(old_text, element_text)
 
     def _is_word_char(self, ch: str) -> bool:
         return bool(self.WORD_CHAR_RE.match(ch))
-
-    def _expand_span_to_word_boundaries(
-        self,
-        element_text: str,
-        start: int,
-        end: int,
-    ) -> tuple[int, int]:
-        """
-        Expanderar ett spann till närmaste ordgränser.
-        Konservativt: bara bokstavs-/siffergränser, inte fraser.
-        """
-        new_start = start
-        new_end = end
-
-        while new_start > 0 and self._is_word_char(element_text[new_start - 1]):
-            new_start -= 1
-
-        while new_end < len(element_text) and self._is_word_char(element_text[new_end]):
-            new_end += 1
-
-        return new_start, new_end
-
-    def _looks_like_fragment_boundary(
-        self,
-        element_text: str,
-        start: int,
-        end: int,
-    ) -> bool:
-        """
-        Returnerar True om spannet sannolikt börjar/slutar mitt i ord.
-        """
-        left_midword = (
-            start > 0
-            and start < len(element_text)
-            and self._is_word_char(element_text[start - 1])
-            and self._is_word_char(element_text[start])
-        )
-        right_midword = (
-            end > 0
-            and end < len(element_text)
-            and self._is_word_char(element_text[end - 1])
-            and self._is_word_char(element_text[end])
-        )
-
-        return left_midword or right_midword
 
     def _span_splits_a_word(self, element_text: str, start: int, end: int) -> bool:
         """True om spannet börjar eller slutar inne i ett ord i elementets text."""
@@ -1189,10 +1147,7 @@ class JBGLangImprovSuggestorAI:
         element_text: str,
     ) -> SuggestedChange:
         """
-        Försök reparera reducerade spann genom att:
-        1. hitta exakt old i element_text
-        2. expandera till ordgränser om old ser ut att ligga mitt i ord
-        3. markera unsafe om spannet fortfarande ser trasigt ut
+        Kontrollera ett entydigt ankare utan att flytta eller reparera det.
         """
         span = self._find_span_or_normalized_span(suggestion.old, element_text)
         if span is None:
@@ -1207,29 +1162,12 @@ class JBGLangImprovSuggestorAI:
                 motivation=suggestion.motivation,
                 match_status=suggestion.match_status,
                 safe_to_apply=False,
-                safety_reason="old_not_found_exactly_in_element_text",
+                safety_reason="ambiguous_or_partial_source_anchor",
             )
 
         start, end = span
         old = suggestion.old
         new = suggestion.new
-
-        if self._looks_like_fragment_boundary(element_text, start, end):
-            expanded_start, expanded_end = self._expand_span_to_word_boundaries(element_text, start, end)
-            expanded_old = element_text[expanded_start:expanded_end]
-
-            prefix_len = start - expanded_start
-            suffix_len = expanded_end - end
-
-            expanded_new = new
-            if prefix_len > 0:
-                expanded_new = expanded_old[:prefix_len] + expanded_new
-            if suffix_len > 0:
-                expanded_new = expanded_new + expanded_old[len(expanded_old) - suffix_len:]
-
-            old = expanded_old
-            new = expanded_new
-            start, end = expanded_start, expanded_end
 
         safe = True
         reason = None
@@ -1367,6 +1305,10 @@ class JBGLangImprovSuggestorAI:
         if not old:
             return {"reject": True, "reason": "empty_old"}
 
+        source = self._get_element_text_for_suggestion(s)
+        if not s.safe_to_apply or s.match_status == "rejected" or locate_span(s.old, source) is None:
+            return {"reject": True, "reason": "ambiguous_or_partial_source_anchor"}
+
         if old == new:
             return {"reject": True, "reason": "old_equals_new"}
 
@@ -1420,7 +1362,7 @@ class JBGLangImprovSuggestorAI:
             return {"reject": True, "reason": "low_similarity_sensitive_element"}
 
         element_text = self._get_element_text_for_suggestion(s)
-        span = self._find_span_or_normalized_span(old, element_text)
+        span = self._find_span_or_normalized_span(s.old, element_text)
         if span is not None:
             start, end = span
             if self._new_overlaps_following_context(element_text, start, end, old, new):
@@ -1566,10 +1508,10 @@ class JBGLangImprovSuggestorAI:
             return True
         element = self._get_docx_element_by_id(s.element_id) or {}
         text = element.get("text") or ""
-        start = text.find(old)
-        if not old or start < 0:
+        span = locate_span(old, text)
+        if span is None:
             return False
-        end = start + len(old)
+        start, end = span
         result = text[:start] + new + text[end:]
 
         def normalized(value: str) -> str:
@@ -1764,16 +1706,10 @@ class JBGLangImprovSuggestorAI:
     # -------------------------------------------------------------------------
 
     def _match_old_against_text(self, old: str, source_text: str) -> Literal["exact", "normalized", "rejected"]:
-        if old in source_text:
-            return "exact"
-
-        normalized_old = self._normalize_text(old)
-        normalized_source = self._normalize_text(source_text)
-
-        if normalized_old and normalized_old in normalized_source:
-            return "normalized"
-
-        return "rejected"
+        span = locate_span(old, source_text)
+        if span is None:
+            return "rejected"
+        return "exact" if source_text[slice(*span)] == old else "normalized"
 
     @staticmethod
     def _normalize_text(text: str) -> str:

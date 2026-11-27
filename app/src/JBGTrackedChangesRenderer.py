@@ -22,9 +22,9 @@ except ModuleNotFoundError:
     from JBGTokenDiffEngine import TokenDiffEngine
 
 try:
-    from app.src.JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
+    from app.src.JBGDocumentPartAdapter import DocumentPartAdapter
 except ModuleNotFoundError:
-    from JBGDocumentPartAdapter import DocumentPartAdapter, ParagraphNode
+    from JBGDocumentPartAdapter import DocumentPartAdapter
 
 try:
     from app.src.JBGHeaderFooterPartAdapter import HeaderFooterPartAdapter
@@ -32,9 +32,9 @@ except ModuleNotFoundError:
     from JBGHeaderFooterPartAdapter import HeaderFooterPartAdapter
 
 try:
-    from app.src.JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
+    from app.src.JBGFootnotesPartAdapter import FootnotesPartAdapter
 except ModuleNotFoundError:
-    from JBGFootnotesPartAdapter import FootnotesPartAdapter, FootnoteNode
+    from JBGFootnotesPartAdapter import FootnotesPartAdapter
 
 try:
     from app.src.JBGChangePlanner import ChangePlan, DiffSegment
@@ -352,59 +352,21 @@ class TrackedChangesRenderer:
         )
 
     def _apply_table_cell_plan(self, plan: ChangePlan) -> dict:
-        try:
-            located = self.document_adapter.locate_plan_nodes(plan)
-            model = located["paragraph_model"]
-            paragraph = model.paragraph_element
-            overlapping_nodes = located["overlapping_nodes"]
+        located = self.document_adapter.locate_plan_nodes(plan)
+        model = located["paragraph_model"]
+        paragraph = model.paragraph_element
+        overlapping_nodes = located["overlapping_nodes"]
 
-            return self._apply_tracked_change_to_paragraph_element(
-                paragraph=paragraph,
-                visible_text=model.visible_text,
-                overlapping_nodes=overlapping_nodes,
-                anchor_start=plan.anchor.start,
-                anchor_end=plan.anchor.end,
-                old_text=plan.old_text,
-                new_text=plan.new_text,
-                diff_segments=plan.diff_segments,
-            )
-        except Exception:
-            pass
-
-        cell = self._find_table_cell_element(plan.target.element_id)
-        if cell is None:
-            raise ValueError(f"Could not resolve table cell for {plan.target.element_id}")
-
-        paragraphs = cell.findall(f"./{{{W_NS}}}p")
-        if not paragraphs:
-            raise ValueError(f"No paragraphs found in table cell {plan.target.element_id}")
-
-        for paragraph in paragraphs:
-            paragraph_model = self._build_paragraph_model_from_element(paragraph)
-            anchor = self._find_anchor_in_text(plan.old_text, paragraph_model["visible_text"])
-            if anchor is None:
-                continue
-
-            overlapping_nodes = self._get_overlapping_nodes_for_generic_paragraph(
-                nodes=paragraph_model["nodes"],
-                anchor_start=anchor["start"],
-                anchor_end=anchor["end"],
-            )
-            if not overlapping_nodes:
-                continue
-
-            return self._apply_tracked_change_to_paragraph_element(
-                paragraph=paragraph,
-                visible_text=paragraph_model["visible_text"],
-                overlapping_nodes=overlapping_nodes,
-                anchor_start=anchor["start"],
-                anchor_end=anchor["end"],
-                old_text=plan.old_text,
-                new_text=plan.new_text,
-                diff_segments=plan.diff_segments,
-            )
-
-        raise ValueError(f"No matching paragraph found in table cell {plan.target.element_id}")
+        return self._apply_tracked_change_to_paragraph_element(
+            paragraph=paragraph,
+            visible_text=model.visible_text,
+            overlapping_nodes=overlapping_nodes,
+            anchor_start=plan.anchor.start,
+            anchor_end=plan.anchor.end,
+            old_text=plan.old_text,
+            new_text=plan.new_text,
+            diff_segments=plan.diff_segments,
+        )
 
     def _apply_footnote_plan(self, plan: ChangePlan) -> dict:
         if self.footnotes_adapter is None:
@@ -413,20 +375,7 @@ class TrackedChangesRenderer:
         model = self.footnotes_adapter.get_footnote_model_for_plan(plan)
         paragraph_models = self._build_footnote_paragraph_models(model)
 
-        best = None
-        for pm in paragraph_models:
-            anchor = self._find_anchor_in_text(plan.old_text, pm["editable_text"])
-            if anchor is None:
-                continue
-            best = (pm, anchor)
-            break
-
-        if best is None:
-            raise ValueError(
-                f"Could not locate footnote text in editable footnote paragraphs for footnote_id={plan.target.footnote_id}"
-            )
-
-        pm, anchor = best
+        pm, anchor = self.footnotes_adapter.locate_editable_anchor(plan, model, paragraph_models)
 
         overlapping_nodes = self._get_overlapping_nodes_for_generic_paragraph(
             nodes=pm["editable_nodes"],
@@ -464,7 +413,7 @@ class TrackedChangesRenderer:
         diff_segments=None,
     ) -> dict:
         matched = visible_text[anchor_start:anchor_end]
-        if not self._texts_match_leniently(matched, old_text):
+        if matched != old_text:
             raise ValueError(
                 f"Anchor text mismatch. Expected old_text={loggable_text(old_text)}, found={loggable_text(matched)}"
             )
@@ -548,59 +497,6 @@ class TrackedChangesRenderer:
     # Generic helpers
     # ------------------------------------------------------------------
 
-    def _build_paragraph_model_from_element(self, paragraph: etree._Element) -> dict:
-        nodes = []
-        visible_parts = []
-        cursor = 0
-
-        for run in paragraph.findall(f"./{{{W_NS}}}r"):
-            for child in run:
-                if child.tag == f"{{{W_NS}}}t":
-                    text = child.text or ""
-                    node = ParagraphNode(
-                        kind="text",
-                        text=text,
-                        element=child,
-                        run_element=run,
-                        start=cursor,
-                        end=cursor + len(text),
-                    )
-                    nodes.append(node)
-                    visible_parts.append(text)
-                    cursor += len(text)
-
-                elif child.tag == f"{{{W_NS}}}tab":
-                    node = ParagraphNode(
-                        kind="tab",
-                        text="\t",
-                        element=child,
-                        run_element=run,
-                        start=cursor,
-                        end=cursor + 1,
-                    )
-                    nodes.append(node)
-                    visible_parts.append("\t")
-                    cursor += 1
-
-                elif child.tag in {f"{{{W_NS}}}br", f"{{{W_NS}}}cr"}:
-                    node = ParagraphNode(
-                        kind="linebreak",
-                        text="\n",
-                        element=child,
-                        run_element=run,
-                        start=cursor,
-                        end=cursor + 1,
-                    )
-                    nodes.append(node)
-                    visible_parts.append("\n")
-                    cursor += 1
-
-        return {
-            "paragraph": paragraph,
-            "visible_text": "".join(visible_parts),
-            "nodes": nodes,
-        }
-
     def _get_overlapping_nodes_for_generic_paragraph(self, nodes: list, anchor_start: int, anchor_end: int) -> list:
         overlapping_nodes = []
         for node in nodes:
@@ -609,53 +505,6 @@ class TrackedChangesRenderer:
             if max(node.start, anchor_start) < min(node.end, anchor_end):
                 overlapping_nodes.append(node)
         return overlapping_nodes
-
-    def _find_anchor_in_text(self, old_text: str, source_text: str) -> Optional[dict]:
-        idx = source_text.find(old_text)
-        if idx != -1:
-            return {"start": idx, "end": idx + len(old_text)}
-        return None
-
-    def _texts_match_leniently(self, found: str, expected: str) -> bool:
-        if found == expected:
-            return True
-        if found.strip() == expected.strip():
-            return True
-        if expected.startswith(found) and len(expected) - len(found) <= 2:
-            return True
-        return False
-
-    def _find_table_cell_element(self, element_id: Optional[str]) -> Optional[etree._Element]:
-        if not element_id:
-            return None
-
-        parts = element_id.split("_")
-        if len(parts) not in {5, 6} or parts[0] != "table" or parts[2] != "cell":
-            return None
-
-        try:
-            table_index = int(parts[1])
-            row_index = int(parts[3])
-            col_index = int(parts[4])
-        except Exception:
-            return None
-
-        root = self.document_adapter.root
-        tables = root.xpath("//w:body/w:tbl", namespaces={"w": W_NS})
-        if table_index < 1 or table_index > len(tables):
-            return None
-
-        table = tables[table_index - 1]
-        rows = table.findall(f"{{{W_NS}}}tr")
-        if row_index < 1 or row_index > len(rows):
-            return None
-
-        row = rows[row_index - 1]
-        cells = row.findall(f"{{{W_NS}}}tc")
-        if col_index < 1 or col_index > len(cells):
-            return None
-
-        return cells[col_index - 1]
 
     # ------------------------------------------------------------------
     # Single-run case
@@ -679,7 +528,7 @@ class TrackedChangesRenderer:
         med radbrytningar och tabbar.
         """
         plan = plan_span_edit(paragraph, first_node, last_node, anchor_start, anchor_end, new_text)
-        if not self._texts_match_leniently(plan.actual_old, old_text):
+        if plan.actual_old != old_text:
             raise ValueError(
                 f"Span text mismatch. Expected {loggable_text(old_text)}, got {loggable_text(plan.actual_old)}"
             )
